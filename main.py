@@ -72,16 +72,9 @@ DEFAULT_SIMILARITY_THRESHOLD = 0.30  # 🔥 0.35 -> 0.30 (더 많은 맥락 확�
 USE_LANGGRAPH = True  # 🔥 LangGraph 파이프라인 사용 여부
 
 PRESET_MODELS = {
-    "ko-sbert": "snunlp/KR-SBERT-V40K-klueNLI-augSTS",
-    "ko-simcse": "BM-K/KoSimCSE-roberta",
-    "multilingual-minilm": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
-    "multilingual-e5-large": "intfloat/multilingual-e5-large",
     "multilingual-e5-small": "intfloat/multilingual-e5-small",
-    "bge-m3": "BAAI/bge-m3",
-    "minilm": "sentence-transformers/all-MiniLM-L6-v2",
-    "mpnet": "sentence-transformers/all-mpnet-base-v2",
-    "qwen3-0.6b": "Qwen/Qwen3-Embedding-0.6B",
 }
+
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -211,7 +204,7 @@ def root():
             "페이지 번호 추적",
             "Parent-Child 계층",
             "Question 추적 (Neo4j)",
-            "ChromaDB + Neo4j 동기화 삭제"
+            "Weaviate + Neo4j 동기화 삭제"
         ],
         "endpoints": {
             "upload": "/rag/upload",
@@ -339,7 +332,7 @@ async def upload_document(
         if not chunks:
             raise HTTPException(400, "문서에서 텍스트를 추출할 수 없습니다.")
         
-        # === ChromaDB 저장 ===
+        # === Weaviate 저장 ===
         model_path = resolve_model_path(model)
         texts = [c.text for c in chunks]
         metadatas = [
@@ -358,7 +351,7 @@ async def upload_document(
             collection_name=collection,
             model_name=model_path
         )
-        print(f"   ✅ ChromaDB 저장 완료: {len(chunks)} 청크")
+        print(f"   ✅ Weaviate 저장 완료: {len(chunks)} 청크")
         
         # === PostgreSQL 저장 ===
         try:
@@ -627,16 +620,16 @@ def list_documents(collection: str = "documents"):
 @app.delete("/rag/document")
 def delete_document(request: DeleteDocRequest):
     """
-    🔥 문서 삭제 (ChromaDB + Neo4j 동시 삭제)
+    🔥 문서 삭제 (Weaviate + Neo4j 동시 삭제)
     """
     result = {"chromadb": None, "neo4j": None}
     
-    # 1. ChromaDB 삭제
+    # 1. Weaviate 삭제
     chroma_result = vector_store.delete_by_doc_name(
         doc_name=request.doc_name,
         collection_name=request.collection
     )
-    result["chromadb"] = chroma_result
+    result["weaviate"] = chroma_result
     
     # 2. Neo4j 삭제 (옵션)
     if request.delete_from_neo4j:
