@@ -46,3 +46,6 @@ chroma_db/
 chroma-data/
 data/chroma/
 db/chroma/
+
+# else
+.claude
