@@ -21,12 +21,12 @@ import torch
 import time
 import uuid
 
-from rag.sql_store import SQLStore
+from backend.sql_store import SQLStore
 sql_store = SQLStore()
 sql_store.init_db()
 
 # RAG 모듈 - 레거시 (폴백용)
-from rag import (
+from backend import (
     load_document,
     get_supported_extensions,
     create_chunks,
@@ -34,9 +34,9 @@ from rag import (
     get_available_methods,
     CHUNK_METHODS,
 )
-from rag import vector_store
-from rag.prompt import build_rag_prompt, build_chunk_prompt
-from rag.llm import (
+from backend import vector_store
+from backend.prompt import build_rag_prompt, build_chunk_prompt
+from backend.llm import (
     get_llm_response,
     ZaiLLM,
     OllamaLLM,
@@ -46,7 +46,7 @@ from rag.llm import (
 
 # 🔥 LangGraph 파이프라인 (v9.2)
 try:
-    from rag.document_pipeline import process_document, state_to_chunks, Chunk
+    from backend.document_pipeline import process_document, state_to_chunks, Chunk
     LANGGRAPH_AVAILABLE = True
     print("✅ LangGraph 파이프라인 사용 가능")
 except ImportError as e:
@@ -101,7 +101,7 @@ def get_graph_store():
     """Neo4j 그래프 스토어 싱글톤"""
     global _graph_store
     if _graph_store is None:
-        from rag.graph_store import Neo4jGraphStore
+        from backend.graph_store import Neo4jGraphStore
         _graph_store = Neo4jGraphStore()
         _graph_store.connect()
     return _graph_store
@@ -444,7 +444,7 @@ async def upload_document(
         graph_sections = 0
         
         try:
-            from rag.graph_store import Neo4jGraphStore
+            from backend.graph_store import Neo4jGraphStore
             
             graph = get_graph_store()
             if graph.test_connection():
@@ -454,7 +454,7 @@ async def upload_document(
                     _upload_to_neo4j_from_pipeline(graph, result, filename)
                 else:
                     # 레거시: ParsedDocument에서 생성
-                    from rag.graph_store import document_to_graph
+                    from backend.graph_store import document_to_graph
                     document_to_graph(graph, parsed_doc, sop_id)
                 
                 graph_uploaded = True
@@ -769,7 +769,7 @@ def ask_with_rag(request: AskRequest):
     # 🔥 Question 추적 (Neo4j)
     question_id = None
     try:
-        from rag.graph_store import track_rag_question
+        from backend.graph_store import track_rag_question
         graph = get_graph_store()
         if graph.test_connection():
             question_id = track_rag_question(
@@ -984,7 +984,7 @@ async def graph_upload_document(
                 "pipeline": "langgraph"
             }
         else:
-            from rag.graph_store import document_to_graph
+            from backend.graph_store import document_to_graph
             
             parsed_doc = load_document(filename, content)
             sop_id = parsed_doc.metadata.get("sop_id")
@@ -1138,7 +1138,7 @@ def graph_section_usage_stats(sop_id: str = None):
 
 # 에이전트 모듈 임포트
 try:
-    from rag.agent import (
+    from backend.agent import (
         init_agent_tools, 
         run_agent, 
         create_agent,
@@ -1250,15 +1250,29 @@ def agent_tools():
     """에이전트 도구 목록"""
     if not AGENT_AVAILABLE:
         raise HTTPException(500, "에이전트 모듈이 로드되지 않았습니다")
-    
+
     tools_info = []
     for tool in AGENT_TOOLS:
         tools_info.append({
             "name": tool.name,
             "description": tool.description
         })
-    
+
     return {"tools": tools_info, "count": len(tools_info)}
+
+
+# 🔥 테스트용 간단한 에코 엔드포인트
+class SimpleRequest(BaseModel):
+    message: str
+
+@app.post("/test/echo")
+def test_echo(request: SimpleRequest):
+    """테스트용 간단한 에코 API"""
+    return {
+        "session_id": str(uuid.uuid4()),
+        "answer": f"테스트 응답: {request.message}",
+        "success": True
+    }
 
 
 # ═══════════════════════════════════════════════════════════════════════════

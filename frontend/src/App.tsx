@@ -5,51 +5,23 @@ import './App.css'
 // 타입 정의
 // ═══════════════════════════════════════════════════════════════════════════
 
-interface MetadataDisplay {
-  doc_name?: string
-  doc_title?: string
-  sop_id?: string
-  version?: string
-  section?: string
-  section_path?: string           // 🔥 "5 > 5.1 > 5.1.1"
-  section_path_readable?: string  // 🔥 "5 절차 > 5.1 문서체계 > 5.1.1 Level 1"
-  title?: string
-  page?: string
-}
-
-interface Source {
-  text: string
-  similarity: number
-  metadata: Record<string, any>
-  metadata_display?: MetadataDisplay
+interface FileNode {
+  name: string
+  type: 'file' | 'folder'
+  icon?: string
+  children?: FileNode[]
+  expanded?: boolean
 }
 
 interface ChatMessage {
   role: 'user' | 'assistant'
   content: string
-  sources?: Source[]
   timestamp: Date
-}
-
-interface DocumentInfo {
-  doc_name: string
-  doc_title?: string
-  chunk_count: number
-  chunk_method?: string
+  thoughtProcess?: string
+  thinkingTime?: number
 }
 
 const API_URL = 'http://localhost:8000'
-
-// ═══════════════════════════════════════════════════════════════════════════
-// 유틸리티
-// ═══════════════════════════════════════════════════════════════════════════
-
-const getSimilarityColor = (score: number) => {
-  if (score >= 0.7) return '#22c55e'
-  if (score >= 0.5) return '#eab308'
-  if (score >= 0.3) return '#f97316'
-  return '#ef4444'
-}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 메인 컴포넌트
@@ -61,36 +33,66 @@ function App() {
   const [inputMessage, setInputMessage] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const [sessionId, setSessionId] = useState<string | null>(null)
+  const [agentStatus, setAgentStatus] = useState<string>('연결 확인 중...')
+  const [isConnected, setIsConnected] = useState(false)
 
-  // 문서 상태
-  const [documents, setDocuments] = useState<DocumentInfo[]>([])
-  const [uploadStatus, setUploadStatus] = useState('')
-  const [uploadLoading, setUploadLoading] = useState(false)
+  // UI 상태
+  const [selectedDocument, setSelectedDocument] = useState<string | null>(null)
+  const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set())
 
-  // 🔥 마크다운 미리보기 상태
-  const [previewMarkdown, setPreviewMarkdown] = useState('')
-  const [previewFilename, setPreviewFilename] = useState('')
-  const [showPreview, setShowPreview] = useState(false)
-  const [previewLoading, setPreviewLoading] = useState(false)
-
-  // 설정 상태
-  const [showSettings, setShowSettings] = useState(false)
-  const [showSources, setShowSources] = useState(true)
-  const [embeddingModel, setEmbeddingModel] = useState('multilingual-e5-small')
-  const [llmModel, setLlmModel] = useState('glm-4.7-flash')
-  const [llmBackend, setLlmBackend] = useState('zai') // 🔥 백엔드 상태 추가
-  const [chunkMethod, setChunkMethod] = useState('article')
-  const [nResults, setNResults] = useState(7)  // 🔥 참고 문서 수 (3 -> 7 상향)
-  const [agentMode, setAgentMode] = useState(false)  // 🤖 에이전트 모드
-
-  // 소스 확장 상태
-  const [expandedSources, setExpandedSources] = useState<Set<number>>(new Set())
+  // 파일 트리 상태
+  const [fileTree] = useState<FileNode[]>([
+    {
+      name: 'easy_quality',
+      type: 'folder',
+      expanded: true,
+      children: [
+        { name: '__pycache__', type: 'folder', icon: '📁' },
+        { name: '.vscode', type: 'folder', icon: '📁' },
+        { name: 'chroma_db', type: 'folder', icon: '📁' },
+        { name: 'frontend', type: 'folder', icon: '📁' },
+        { name: 'rag', type: 'folder', icon: '📁' },
+        { name: '.gitignore', type: 'file', icon: '📄' },
+        { name: 'agent_logic_manual.md', type: 'file', icon: '📝' },
+        { name: 'main.py', type: 'file', icon: '🐍' },
+        { name: 'RAGLOGIC.md', type: 'file', icon: '📝' },
+        { name: 'README.md', type: 'file', icon: '📝' },
+        { name: 'requirements.txt', type: 'file', icon: '📄' },
+      ],
+    },
+  ])
 
   const chatEndRef = useRef<HTMLDivElement>(null)
-  const fileInputRef = useRef<HTMLInputElement>(null)
 
+  // 백엔드 연결 상태 확인
   useEffect(() => {
-    fetchDocuments()
+    const checkBackendStatus = async () => {
+      try {
+        const healthResponse = await fetch(`${API_URL}/health`)
+        if (healthResponse.ok) {
+          setIsConnected(true)
+          setAgentStatus('백엔드 연결됨')
+
+          try {
+            const agentResponse = await fetch(`${API_URL}/agent/status`)
+            if (agentResponse.ok) {
+              const data = await agentResponse.json()
+              setAgentStatus(data.agent_available ? '에이전트 준비됨' : '일반 채팅 모드')
+            }
+          } catch {
+            setAgentStatus('일반 채팅 모드')
+          }
+        } else {
+          setIsConnected(false)
+          setAgentStatus('백엔드 연결 실패')
+        }
+      } catch (error) {
+        setIsConnected(false)
+        setAgentStatus('백엔드 서버에 연결할 수 없습니다')
+      }
+    }
+
+    checkBackendStatus()
   }, [])
 
   useEffect(() => {
@@ -100,104 +102,6 @@ function App() {
   // ─────────────────────────────────────────────────────────────
   // API 호출
   // ─────────────────────────────────────────────────────────────
-
-  const fetchDocuments = async () => {
-    try {
-      const response = await fetch(`${API_URL}/rag/documents?collection=documents`)
-      if (response.ok) {
-        const data = await response.json()
-        setDocuments(data.documents || [])
-      }
-    } catch {
-      console.error('문서 목록 로드 실패')
-    }
-  }
-
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (!file) return
-
-    setUploadLoading(true)
-    setUploadStatus('업로드 중...')
-
-    try {
-      const formData = new FormData()
-      formData.append('file', file)
-      formData.append('collection', 'documents')
-      formData.append('chunk_method', chunkMethod)
-      formData.append('model', embeddingModel)
-      formData.append('exclude_intro', 'true')  // 🔥 v6.3: intro 블록 제외
-
-      const response = await fetch(`${API_URL}/rag/upload`, {
-        method: 'POST',
-        body: formData,
-      })
-
-      if (response.ok) {
-        const data = await response.json()
-        setUploadStatus(`✅ ${data.filename} 업로드 완료 (${data.chunks}개 청크)`)
-        fetchDocuments()
-      } else {
-        const error = await response.json()
-        setUploadStatus(`❌ 업로드 실패: ${error.detail}`)
-      }
-    } catch (error) {
-      setUploadStatus(`❌ 업로드 오류: ${error}`)
-    } finally {
-      setUploadLoading(false)
-      if (fileInputRef.current) fileInputRef.current.value = ''
-    }
-  }
-
-  const handlePreviewMarkdown = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (!file) return
-
-    setPreviewLoading(true)
-    setPreviewFilename(file.name)
-    setShowPreview(true)
-
-    try {
-      const formData = new FormData()
-      formData.append('file', file)
-
-      const response = await fetch(`${API_URL}/rag/preview-markdown`, {
-        method: 'POST',
-        body: formData,
-      })
-
-      if (response.ok) {
-        const data = await response.json()
-        setPreviewMarkdown(data.markdown)
-      } else {
-        const error = await response.json()
-        setPreviewMarkdown(`❌ 변환 실패: ${error.detail}`)
-      }
-    } catch (error) {
-      setPreviewMarkdown(`❌ 오류: ${error}`)
-    } finally {
-      setPreviewLoading(false)
-      if (fileInputRef.current) fileInputRef.current.value = ''
-    }
-  }
-
-  const handleDeleteDocument = async (docName: string) => {
-    if (!confirm(`"${docName}" 문서를 삭제하시겠습니까?`)) return
-
-    try {
-      const response = await fetch(`${API_URL}/rag/document`, {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ doc_name: docName, collection: 'documents' }),
-      })
-
-      if (response.ok) {
-        fetchDocuments()
-      }
-    } catch (error) {
-      console.error('삭제 오류:', error)
-    }
-  }
 
   const sendMessage = async () => {
     if (!inputMessage.trim() || isLoading) return
@@ -209,47 +113,75 @@ function App() {
     }
 
     setMessages(prev => [...prev, userMessage])
+    const messageToSend = inputMessage
     setInputMessage('')
     setIsLoading(true)
 
-    try {
-      // 🤖 에이전트 모드 vs 일반 RAG 분기
-      const endpoint = agentMode ? `${API_URL}/agent/chat` : `${API_URL}/chat`
-      const requestBody = agentMode
-        ? {
-          message: inputMessage,
-          session_id: sessionId,
-          llm_model: llmModel,
-          use_langgraph: true,
-        }
-        : {
-          message: inputMessage,
-          session_id: sessionId,
-          embedding_model: embeddingModel,
-          llm_model: llmModel,
-          llm_backend: llmBackend, // 🔥 백엔드 정보 포함
-          include_sources: showSources,
-          n_results: nResults,
-        }
+    const startTime = Date.now()
 
-      const response = await fetch(endpoint, {
+    try {
+      let response = await fetch(`${API_URL}/agent/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(requestBody),
+        body: JSON.stringify({
+          message: messageToSend,
+          session_id: sessionId,
+          llm_model: 'glm-4.7-flash',
+          embedding_model: 'multilingual-e5-small',
+          use_langgraph: true,
+        }),
       })
+
+      if (response.status === 404) {
+        console.log('에이전트 API 없음, 테스트 에코 API 사용')
+        response = await fetch(`${API_URL}/test/echo`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            message: messageToSend,
+          }),
+        })
+      }
+
+      const thinkingTime = Math.floor((Date.now() - startTime) / 1000)
 
       if (response.ok) {
         const data = await response.json()
+
+        // 디버깅: 받은 데이터 확인
+        console.log('백엔드 응답 데이터:', data)
 
         if (!sessionId) {
           setSessionId(data.session_id)
         }
 
+        // tool_call 태그 제거 및 정리
+        let cleanedAnswer = data.answer || data.message || '응답을 받았습니다.'
+
+        console.log('원본 답변:', cleanedAnswer)
+
+        // <tool_call>...</tool_call> 태그 제거
+        cleanedAnswer = cleanedAnswer.replace(/<tool_call>.*?<\/tool_call>/gs, '')
+
+        // <arg_key>, <arg_value> 등의 태그 제거
+        cleanedAnswer = cleanedAnswer.replace(/<\/?[^>]+(>|$)/g, '')
+
+        // 앞뒤 공백 제거
+        cleanedAnswer = cleanedAnswer.trim()
+
+        console.log('정리된 답변:', cleanedAnswer)
+
+        // 답변이 비어있으면 기본 메시지 사용
+        if (!cleanedAnswer) {
+          cleanedAnswer = '답변을 처리하는 중 문제가 발생했습니다. 백엔드 로그를 확인해주세요.'
+        }
+
         const assistantMessage: ChatMessage = {
           role: 'assistant',
-          content: data.answer,
-          sources: agentMode ? [] : data.sources,  // 에이전트 모드는 sources 없음
+          content: cleanedAnswer,
           timestamp: new Date(),
+          thoughtProcess: '질문을 분석하고 관련 문서를 검색했습니다.',
+          thinkingTime: thinkingTime,
         }
 
         setMessages(prev => [...prev, assistantMessage])
@@ -257,7 +189,7 @@ function App() {
         const error = await response.json()
         const errorMessage: ChatMessage = {
           role: 'assistant',
-          content: `오류가 발생했습니다: ${error.detail}`,
+          content: `오류가 발생했습니다: ${error.detail || error.message}`,
           timestamp: new Date(),
         }
         setMessages(prev => [...prev, errorMessage])
@@ -265,24 +197,13 @@ function App() {
     } catch (error) {
       const errorMessage: ChatMessage = {
         role: 'assistant',
-        content: `네트워크 오류가 발생했습니다. 서버 연결을 확인해주세요.`,
+        content: `네트워크 오류: ${error}. 백엔드가 http://localhost:8000에서 실행 중인지 확인해주세요.`,
         timestamp: new Date(),
       }
       setMessages(prev => [...prev, errorMessage])
     } finally {
       setIsLoading(false)
     }
-  }
-
-  const clearChat = async () => {
-    if (sessionId) {
-      try {
-        await fetch(`${API_URL}/chat/history/${sessionId}`, { method: 'DELETE' })
-      } catch { }
-    }
-    setMessages([])
-    setSessionId(null)
-    setExpandedSources(new Set())
   }
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
@@ -292,71 +213,45 @@ function App() {
     }
   }
 
-  const toggleSourceExpand = (index: number) => {
-    const newSet = new Set(expandedSources)
-    if (newSet.has(index)) {
-      newSet.delete(index)
+  const toggleSection = (section: string) => {
+    const newSet = new Set(expandedSections)
+    if (newSet.has(section)) {
+      newSet.delete(section)
     } else {
-      newSet.add(index)
+      newSet.add(section)
     }
-    setExpandedSources(newSet)
+    setExpandedSections(newSet)
   }
 
   // ─────────────────────────────────────────────────────────────
   // 렌더링 헬퍼
   // ─────────────────────────────────────────────────────────────
 
-  const renderSource = (source: Source, index: number, messageIndex: number) => {
-    const globalIndex = messageIndex * 100 + index
-    const isExpanded = expandedSources.has(globalIndex)
-    const meta = source.metadata_display || {}
-
-    return (
-      <div key={index} className="source-item">
-        <div className="source-header" onClick={() => toggleSourceExpand(globalIndex)}>
-          <div className="source-info">
-            <span className="source-doc">📄 {meta.doc_name || '문서'}</span>
-            {meta.sop_id && <span className="source-sop">{meta.sop_id}</span>}
-            {meta.section && <span className="source-section">{meta.section}</span>}
-          </div>
-          <div className="source-meta">
-            <span
-              className="similarity-badge"
-              style={{ backgroundColor: getSimilarityColor(source.similarity) }}
-            >
-              {(source.similarity * 100).toFixed(0)}%
-            </span>
-            <span className="expand-icon">{isExpanded ? '▼' : '▶'}</span>
-          </div>
+  const renderFileTree = (nodes: FileNode[], depth = 0) => {
+    return nodes.map((node, index) => (
+      <div key={index} className="tree-node">
+        <div
+          className="tree-item"
+          style={{ paddingLeft: `${depth * 16 + 8}px` }}
+          onClick={() => {
+            if (node.type === 'file') {
+              setSelectedDocument(node.name)
+            }
+          }}
+        >
+          {node.type === 'folder' && (
+            <span className="tree-chevron">{node.expanded ? '▼' : '▶'}</span>
+          )}
+          <span className="tree-icon">{node.icon || (node.type === 'folder' ? '📁' : '📄')}</span>
+          <span className="tree-name">{node.name}</span>
         </div>
-
-        {/* 🔥 section_path를 헤더 바로 아래에 항상 표시 (펼치지 않아도) */}
-        {(meta.section_path_readable || meta.section_path) && (
-          <div className="section-path-preview">
-            <span className="path-icon">📍</span>
-            <span className="path-text">{meta.section_path_readable || meta.section_path}</span>
-          </div>
-        )}
-
-        {isExpanded && (
-          <div className="source-details">
-            {meta.title && (
-              <div className="source-title">
-                <strong>제목:</strong> {meta.title}
-              </div>
-            )}
-
-            <div className="source-text">{source.text}</div>
-
-            {/* 전체 메타데이터 */}
-            <details className="metadata-details">
-              <summary>전체 메타데이터</summary>
-              <pre>{JSON.stringify(source.metadata, null, 2)}</pre>
-            </details>
+        {node.expanded && node.children && (
+          <div className="tree-children">
+            {renderFileTree(node.children, depth + 1)}
           </div>
         )}
       </div>
-    )
+    ))
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -368,301 +263,190 @@ function App() {
       {/* 헤더 */}
       <header className="header">
         <div className="header-left">
-          <h1>🤖 SOP 챗봇 <small>v11.0</small></h1>
-          {agentMode && <span className="agent-badge">Agent</span>}
+          <span className="project-name">easy_quality</span>
+        </div>
+        <div className="header-center">
+          <span className="header-action">Open Agent Manager</span>
         </div>
         <div className="header-right">
-          <button
-            className="settings-btn"
-            onClick={() => setShowSettings(!showSettings)}
-          >
-            ⚙️ 설정
-          </button>
+          <button className="icon-btn">🔍</button>
+          <button className="icon-btn">⚙️</button>
+          <button className="icon-btn">🎨</button>
         </div>
       </header>
 
       <div className="main-container">
-        {/* 사이드바 */}
-        <aside className={`sidebar ${showSettings ? 'show' : ''}`}>
-          {/* 문서 업로드 */}
-          <section className="sidebar-section">
-            <h3>📁 문서 업로드</h3>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".pdf,.docx,.doc,.txt,.md,.html"
-              onChange={handleFileUpload}
-              disabled={uploadLoading}
-              className="file-input"
-            />
-            {uploadStatus && <p className="upload-status">{uploadStatus}</p>}
-
-            {/* 🔥 마크다운 미리보기 */}
-            <div className="preview-section">
-              <h4>🔍 마크다운 미리보기</h4>
-              <input
-                type="file"
-                accept=".pdf,.docx,.doc,.txt,.md,.html"
-                onChange={handlePreviewMarkdown}
-                disabled={previewLoading}
-                className="file-input"
-              />
-              {previewLoading && <p className="preview-status">변환 중...</p>}
-            </div>
-          </section>
-
-          {/* 문서 목록 */}
-          {documents.length > 0 && (
-            <section className="sidebar-section">
-              <h3>📚 문서 ({documents.length})</h3>
-              <div className="doc-list">
-                {documents.map((doc, i) => (
-                  <div key={i} className="doc-item">
-                    <div className="doc-info">
-                      <span className="doc-name">{doc.doc_name}</span>
-                      <span className="doc-chunks">{doc.chunk_count}청크</span>
-                    </div>
-                    <button
-                      className="delete-btn"
-                      onClick={() => handleDeleteDocument(doc.doc_name)}
-                    >
-                      🗑️
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </section>
-          )}
-
-          {/* 설정 */}
-          <section className="sidebar-section">
-            <h3>⚙️ 설정</h3>
-
-            <div className="setting-group">
-              <label>임베딩 모델</label>
-              <select
-                value={embeddingModel}
-                onChange={(e) => setEmbeddingModel(e.target.value)}
-              >
-                <option value="multilingual-e5-small">E5-Small (경량)</option>
-                <option value="ko-sbert">Ko-SBERT (한국어)</option>
-                <option value="bge-m3">BGE-M3 (고성능)</option>
-              </select>
-            </div>
-
-            <div className="setting-group">
-              <label>LLM 모델</label>
-              <select
-                value={llmModel}
-                onChange={(e) => {
-                  setLlmModel(e.target.value);
-                  // 모델에 따라 백엔드 자동 설정
-                  if (e.target.value.includes('glm')) setLlmBackend('zai');
-                  else if (e.target.value.includes(':')) setLlmBackend('ollama');
-                  else setLlmBackend('hf');
-                }}
-              >
-                <option value="glm-4.7-flash">GLM-4.7-Flash (Z.AI)</option>
-                <option value="qwen2.5:3b">Qwen2.5-3B (Ollama)</option>
-                <option value="qwen3:4b">Qwen3-4B (Ollama)</option>
-              </select>
-            </div>
-
-            <div className="setting-group">
-              <label>청킹 방식</label>
-              <select
-                value={chunkMethod}
-                onChange={(e) => setChunkMethod(e.target.value)}
-              >
-                <option value="article">📜 조항 단위 (SOP 권장)</option>
-                <option value="recursive">🔄 Recursive</option>
-                <option value="sentence">📝 문장 단위</option>
-                <option value="paragraph">📄 문단 단위</option>
-              </select>
-            </div>
-
-            {!agentMode && (
-              <div className="setting-group">
-                <label>참고 문서 수</label>
-                <select
-                  value={nResults}
-                  onChange={(e) => setNResults(Number(e.target.value))}
-                >
-                  <option value={1}>1개</option>
-                  <option value={2}>2개</option>
-                  <option value={3}>3개 (기본)</option>
-                  <option value={5}>5개</option>
-                  <option value={10}>10개</option>
-                </select>
-              </div>
-            )}
-
-            {!agentMode && (
-              <div className="setting-group">
-                <label className="checkbox-label">
-                  <input
-                    type="checkbox"
-                    checked={showSources}
-                    onChange={(e) => setShowSources(e.target.checked)}
-                  />
-                  출처 표시
-                </label>
-              </div>
-            )}
-
-            {/* 🤖 에이전트 모드 토글 */}
-            <div className="setting-group agent-toggle">
-              <label className="toggle-label">
-                <span className="toggle-text">
-                  {agentMode ? '🤖 에이전트 모드' : '📄 일반 RAG'}
-                </span>
-                <div className="toggle-switch">
-                  <input
-                    type="checkbox"
-                    checked={agentMode}
-                    onChange={(e) => setAgentMode(e.target.checked)}
-                  />
-                  <span className="toggle-slider"></span>
-                </div>
-              </label>
-              <p className="toggle-description">
-                {agentMode
-                  ? 'LLM이 상황에 맞는 도구를 선택합니다 (LangSmith 추적)'
-                  : '벡터 검색 → LLM 답변 (기본 방식)'}
-              </p>
-            </div>
-          </section>
+        {/* 왼쪽: Explorer */}
+        <aside className="explorer">
+          <div className="explorer-header">
+            <span className="explorer-title">Explorer</span>
+            <button className="icon-btn-small">⋯</button>
+          </div>
+          <div className="file-tree">
+            {renderFileTree(fileTree)}
+          </div>
+          <div className="explorer-footer">
+            <button className="footer-btn">📋 Outline</button>
+            <button className="footer-btn">⏱️ Timeline</button>
+          </div>
         </aside>
 
-        {/* 채팅 영역 */}
-        <main className="chat-area">
-          {/* 채팅 메시지 */}
-          <div className="messages">
-            {messages.length === 0 ? (
-              <div className="welcome-message">
-                <div className="welcome-icon">🤖</div>
-                <h2>SOP 문서 챗봇에 오신 것을 환영합니다!</h2>
-                <p>문서를 업로드하고 질문해보세요.</p>
-                <div className="welcome-hints">
-                  <div className="hint">📄 왼쪽에서 문서를 업로드하세요</div>
-                  <div className="hint">💬 아래 입력창에 질문을 입력하세요</div>
-                  <div className="hint">📍 section_path로 정확한 위치 확인!</div>
-                </div>
+        {/* 가운데: 문서 뷰어 */}
+        <main className="document-viewer">
+          {selectedDocument ? (
+            <div className="document-content">
+              <div className="document-header">
+                <h2>📄 {selectedDocument}</h2>
               </div>
-            ) : (
-              messages.map((msg, msgIndex) => (
-                <div key={msgIndex} className={`message ${msg.role}`}>
-                  <div className="message-avatar">
-                    {msg.role === 'user' ? '👤' : '🤖'}
-                  </div>
-                  <div className="message-content">
-                    <div className="message-text">{msg.content}</div>
+              <div className="document-body">
+                <p className="placeholder-text">문서 내용이 여기에 표시됩니다.</p>
+                <p className="placeholder-text">선택한 파일: {selectedDocument}</p>
+              </div>
+            </div>
+          ) : (
+            <div className="empty-state">
+              <div className="empty-icon">📄</div>
+              <h2>문서를 선택하세요</h2>
+              <p>왼쪽 Explorer에서 파일을 선택하면 내용이 표시됩니다.</p>
+            </div>
+          )}
+        </main>
 
-                    {/* 출처 표시 */}
-                    {msg.role === 'assistant' && msg.sources && msg.sources.length > 0 && showSources && (
-                      <div className="sources">
-                        <div className="sources-header">
-                          📚 참고 문서 ({msg.sources.length})
-                        </div>
-                        {msg.sources.map((source, idx) =>
-                          renderSource(source, idx, msgIndex)
-                        )}
+        {/* 오른쪽: Agent 패널 */}
+        <aside className="agent-panel">
+          <div className="agent-header">
+            <span className="agent-title">Agent</span>
+            <div className="agent-controls">
+              <button className="icon-btn-small">➕</button>
+              <button className="icon-btn-small">🔄</button>
+              <button className="icon-btn-small">⋯</button>
+              <button className="icon-btn-small">✕</button>
+            </div>
+          </div>
+
+          <div className="agent-content">
+            {/* 상태 표시 */}
+            <div className="agent-status-bar">
+              <span className={`status-indicator ${isConnected ? 'connected' : 'disconnected'}`}>
+                {isConnected ? '🟢' : '🔴'}
+              </span>
+              <span className="status-text">{agentStatus}</span>
+            </div>
+
+            {/* 채팅 영역 */}
+            <div className="agent-messages-container">
+              {messages.map((msg, index) => (
+                <div key={index} className={`agent-conversation ${msg.role}`}>
+                  {msg.role === 'user' ? (
+                    <div className="user-input-display">
+                      <div className="user-input-header">
+                        <span className="user-input-icon">💬</span>
+                        <span className="user-input-text">{msg.content}</span>
+                        <button className="undo-btn">↶</button>
                       </div>
-                    )}
+                    </div>
+                  ) : (
+                    <div className="assistant-response">
+                      {/* Thought Process */}
+                      {msg.thoughtProcess && (
+                        <div className="thought-section">
+                          <div
+                            className="thought-header"
+                            onClick={() => toggleSection(`thought-${index}`)}
+                          >
+                            <span className="chevron">
+                              {expandedSections.has(`thought-${index}`) ? '▼' : '▶'}
+                            </span>
+                            <span className="thought-title">Thought Process</span>
+                          </div>
+                          {expandedSections.has(`thought-${index}`) && (
+                            <div className="thought-content">
+                              {msg.thoughtProcess}
+                            </div>
+                          )}
+                        </div>
+                      )}
 
-                    <div className="message-time">
-                      {msg.timestamp.toLocaleTimeString()}
+                      {/* Thinking Time */}
+                      {msg.thinkingTime && (
+                        <div className="thought-section">
+                          <div
+                            className="thought-header"
+                            onClick={() => toggleSection(`time-${index}`)}
+                          >
+                            <span className="chevron">
+                              {expandedSections.has(`time-${index}`) ? '▼' : '▶'}
+                            </span>
+                            <span className="thought-title">Thought for {msg.thinkingTime}s</span>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* 답변 본문 */}
+                      <div className="response-body">
+                        {msg.content}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ))}
+
+              {isLoading && (
+                <div className="agent-conversation assistant">
+                  <div className="assistant-response">
+                    <div className="typing-indicator">
+                      <span></span>
+                      <span></span>
+                      <span></span>
                     </div>
                   </div>
                 </div>
-              ))
-            )}
-
-            {isLoading && (
-              <div className="message assistant loading">
-                <div className="message-avatar">🤖</div>
-                <div className="message-content">
-                  <div className="typing-indicator">
-                    <span></span>
-                    <span></span>
-                    <span></span>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            <div ref={chatEndRef} />
-          </div>
-
-          {/* 입력 영역 */}
-          <div className="input-area">
-            <div className="input-container">
-              <textarea
-                value={inputMessage}
-                onChange={(e) => setInputMessage(e.target.value)}
-                onKeyPress={handleKeyPress}
-                placeholder={documents.length > 0
-                  ? "질문을 입력하세요... (Enter로 전송)"
-                  : "먼저 문서를 업로드해주세요"}
-                disabled={isLoading || documents.length === 0}
-                rows={1}
-              />
-              <button
-                className="send-btn"
-                onClick={sendMessage}
-                disabled={isLoading || !inputMessage.trim() || documents.length === 0}
-              >
-                {isLoading ? '⏳' : '📤'}
-              </button>
-            </div>
-
-            <div className="input-actions">
-              <button className="clear-btn" onClick={clearChat}>
-                🗑️ 대화 초기화
-              </button>
-              {sessionId && (
-                <span className="session-id">세션: {sessionId.slice(0, 8)}...</span>
               )}
+              <div ref={chatEndRef} />
+            </div>
+
+            {/* 하단 입력 영역 */}
+            <div className="agent-input-area">
+              <div className="input-wrapper">
+                <textarea
+                  value={inputMessage}
+                  onChange={(e) => setInputMessage(e.target.value)}
+                  onKeyPress={handleKeyPress}
+                  placeholder="Ask anything (⌘L), @ to mention, / for workflow"
+                  className="agent-input"
+                  rows={1}
+                />
+              </div>
+              <div className="input-actions">
+                <button className="action-btn">➕</button>
+                <button className="action-btn">📋 Planning</button>
+                <button className="action-btn">⚡ Gemini 3 Flash</button>
+                <button className="action-btn">🎤</button>
+                <button
+                  className="action-btn send-btn"
+                  onClick={sendMessage}
+                  disabled={isLoading || !inputMessage.trim()}
+                >
+                  ➤
+                </button>
+              </div>
             </div>
           </div>
-        </main>
+        </aside>
       </div>
 
-      {/* 🔥 마크다운 미리보기 모달 */}
-      {showPreview && (
-        <div className="modal-overlay" onClick={() => setShowPreview(false)}>
-          <div className="modal-content markdown-preview" onClick={e => e.stopPropagation()}>
-            <div className="modal-header">
-              <h2>📄 마크다운 미리보기 - {previewFilename}</h2>
-              <button className="close-btn" onClick={() => setShowPreview(false)}>✕</button>
-            </div>
-            <div className="modal-body">
-              {previewLoading ? (
-                <div className="loading">변환 중...</div>
-              ) : (
-                <pre className="markdown-content">{previewMarkdown}</pre>
-              )}
-            </div>
-            <div className="modal-footer">
-              <button
-                className="download-btn"
-                onClick={() => {
-                  const blob = new Blob([previewMarkdown], { type: 'text/markdown' })
-                  const url = URL.createObjectURL(blob)
-                  const a = document.createElement('a')
-                  a.href = url
-                  a.download = `${previewFilename.replace(/\.[^/.]+$/, '')}.md`
-                  a.click()
-                  URL.revokeObjectURL(url)
-                }}
-                disabled={previewLoading || !previewMarkdown}
-              >
-                💾 다운로드
-              </button>
-            </div>
-          </div>
+      {/* 하단 상태바 */}
+      <footer className="statusbar">
+        <div className="statusbar-left">
+          <span className="status-item">⚡ main*</span>
+          <span className="status-item">🔄</span>
+          <span className="status-item">⊘ 0 ⚠ 0</span>
         </div>
-      )}
+        <div className="statusbar-right">
+          <span className="status-item">Antigravity - Settings</span>
+          <span className="status-item">🔔</span>
+        </div>
+      </footer>
     </div>
   )
 }
