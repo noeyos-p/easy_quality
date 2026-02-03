@@ -7,7 +7,6 @@ uvicorn
 python-multipart
 
 # === 데이터베이스 ===
-chromadb
 psycopg2-binary
 neo4j
 
@@ -40,3 +39,5 @@ langsmith
 pydantic
 numpy
 python-dotenv
+
+weaviate-client
