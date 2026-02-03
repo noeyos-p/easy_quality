@@ -38,3 +38,11 @@ __pycache__/
 *.pyo
 *.pyd
 *.sqlite3
+
+# Chroma local DB (common)
+chroma/
+chromadb/
+chroma_db/
+chroma-data/
+data/chroma/
+db/chroma/
