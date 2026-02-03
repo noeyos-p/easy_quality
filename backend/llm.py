@@ -14,6 +14,94 @@ from typing import Dict, List, Optional, Any
 device = "cuda" if torch.cuda.is_available() else "cpu"
 _loaded_llm: Dict[str, Any] = {}
 
+# ═══════════════════════════════════════════════════════════════════════════
+# OpenAI 백엔드
+# ═══════════════════════════════════════════════════════════════════════════
+
+class OpenAILLM:
+    """OpenAI API"""
+
+    def __init__(self, model: str = "gpt-4o", api_key: str = None):
+        self.model = model
+        self.api_key = api_key or os.getenv("OPENAI_API_KEY", "")
+        self._client = None
+    
+    def _get_client(self):
+        """OpenAI Client 지연 로딩"""
+        if self._client is None:
+            try:
+                from openai import OpenAI
+                self._client = OpenAI(api_key=self.api_key)
+            except ImportError:
+                raise ImportError("openai 패키지가 필요합니다: pip install openai")
+        return self._client
+
+    def generate(
+        self,
+        prompt: str,
+        system: str = None,
+        temperature: float = 0.7,
+        max_tokens: int = 2048
+    ) -> str:
+        """OpenAI API를 사용하여 응답 생성"""
+        if not self.api_key:
+            print("⚠️ OPENAI_API_KEY가 설정되지 않았습니다. .env 파일을 확인하세요.")
+            return "❌ 오류: OPENAI_API_KEY가 설정되지 않았습니다."
+
+        client = self._get_client()
+        
+        try:
+            messages = []
+            if system:
+                messages.append({"role": "system", "content": system})
+            messages.append({"role": "user", "content": prompt})
+
+            # print(f"🚀 OpenAI API 호출 중... (모델: {self.model})")
+            
+            response = client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=temperature
+            )
+            
+            return response.choices[0].message.content or ""
+
+        except Exception as e:
+            print(f"❌ OpenAI 호출 오류: {e}")
+            return f"❌ OpenAI 호출 오류: {str(e)}"
+
+    def generate_stream(
+        self,
+        prompt: str,
+        system: str = None,
+        temperature: float = 0.7,
+        max_tokens: int = 2048
+    ):
+        """스트리밍 생성"""
+        client = self._get_client()
+        
+        messages = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": prompt})
+        
+        stream = client.chat.completions.create(
+            model=self.model,
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            stream=True,
+        )
+        
+        for chunk in stream:
+            if chunk.choices[0].delta.content:
+                yield chunk.choices[0].delta.content
+
+    @staticmethod
+    def is_available() -> bool:
+        return bool(os.getenv("OPENAI_API_KEY"))
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Z.AI 백엔드 (GLM-4.7-Flash)
@@ -329,17 +417,24 @@ def generate_with_hf(
 
 def get_llm_response(
     prompt: str,
-    llm_model: str = "glm-4.7-flash",
-    llm_backend: str = "zai",  # 🔥 기본값 zai로 변경
-    max_tokens: int = 512,
+    llm_model: str = "gpt-4o", # 기본값: OpenAI
+    llm_backend: str = "openai", # openai | zai | ollama
+    max_tokens: int = 1024,
     temperature: float = 0.7
 ) -> str:
-    """통합 LLM 응답"""
+    """통합 LLM 응답 (Hybrid)
+    - 메타데이터 추출 등에는 기본적으로 OpenAI 사용
+    - 테스트 시 llm_backend="zai" 로 변경 가능
+    """
     if llm_backend == "zai":
-        llm = ZaiLLM(llm_model)
+        llm = ZaiLLM(llm_model if llm_model.startswith("glm") else "glm-4.7-flash")
         return llm.generate(prompt, temperature=temperature, max_tokens=max_tokens)
     elif llm_backend == "ollama":
         llm = OllamaLLM(llm_model)
+        return llm.generate(prompt, temperature=temperature, max_tokens=max_tokens)
+    elif llm_backend == "openai":
+         # OpenAI는 별도 클래스 없이 간단하게 처리하거나 OpenAILLM 클래스 활용
+        llm = OpenAILLM(llm_model if not llm_model.startswith("glm") else "gpt-4o")
         return llm.generate(prompt, temperature=temperature, max_tokens=max_tokens)
     else:
         return generate_with_hf(prompt, llm_model, max_tokens, temperature)

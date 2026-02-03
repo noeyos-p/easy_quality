@@ -26,16 +26,11 @@ sql_store = SQLStore()
 sql_store.init_db()
 
 # RAG 모듈 - 레거시 (폴백용)
-from backend import (
-    load_document,
-    get_supported_extensions,
-    create_chunks,
-    create_chunks_from_blocks,
-    get_available_methods,
-    CHUNK_METHODS,
-)
+# RAG 모듈 - 레거시 (폴백용) 제거됨
+# LangGraph 파이프라인이 전적으로 처리
+
 from backend import vector_store
-from backend.prompt import build_rag_prompt, build_chunk_prompt
+# from backend.prompt import build_rag_prompt, build_chunk_prompt (제거됨)
 from backend.llm import (
     get_llm_response,
     ZaiLLM,
@@ -291,102 +286,55 @@ async def upload_document(
         print(f"📄 문서 업로드: {filename}")
         print(f"{'='*70}")
         
-        # 🔥 LangGraph 파이프라인 vs 레거시 선택
-        if use_langgraph and LANGGRAPH_AVAILABLE and USE_LANGGRAPH:
-            # === LangGraph 파이프라인 (v9.2) ===
-            print(f"   🔥 LangGraph 파이프라인 사용")
+        # LangGraph 파이프라인 필수
+        if not LANGGRAPH_AVAILABLE:
+            raise HTTPException(500, "LangGraph 파이프라인이 로드되지 않았습니다.")
             
-            result = process_document(
-                filename=filename,
-                content=content,
-                chunk_size=chunk_size,
-                chunk_overlap=overlap,
-                debug=True
-            )
-            
-            if not result.get("success"):
-                errors = result.get("errors", ["알 수 없는 오류"])
-                raise HTTPException(400, f"문서 처리 실패: {errors}")
-            
-            chunks = state_to_chunks(result)
-            
-            # 메타데이터 보강
-            metadata_base = result.get("metadata", {})
-            sop_id = metadata_base.get("doc_id") or metadata_base.get("sop_id")
-            
-            # 🔥 ID가 없으면 파일명에서 끝자리 숫자로라도 유추 시도
-            if not sop_id:
-                import re
-                id_match = re.search(r'([A-Z0-9]+-[A-Z0-9]+-\d+)', filename)
-                if id_match:
-                    sop_id = id_match.group(1)
-                else:
-                    sop_id = filename.split('.')[0] # 최후의 수단: 파일명
-            
-            # 제목 설정: 원본 파일명 유지 (사용자 요청)
-            doc_title = filename 
-            extracted_title = metadata_base.get("title")
-            if extracted_title and extracted_title not in filename:
-                doc_title = f"{filename} ({extracted_title})"
-            
-            print(f"   DOC ID: {sop_id}")
-            print(f"   제목: {doc_title}")
-            print(f"   품질 점수: {result.get('quality_score', 0):.0%}")
-            print(f"   변환 방법: {result.get('conversion_method')}")
-            print(f"   총 청크: {len(chunks)}")
-            
-            pipeline_version = "langgraph-v9.2"
-            quality_score = result.get("quality_score", 0)
-            conversion_method = result.get("conversion_method", "unknown")
-            
-        else:
-            # === 레거시 파이프라인 ===
-            print(f"   📦 레거시 파이프라인 사용")
-            
-            parsed_doc = load_document(filename, content)
-            sop_id = parsed_doc.metadata.get("sop_id")
-            doc_title = parsed_doc.metadata.get("title", filename)
-            
-            print(f"   SOP ID: {sop_id}")
-            print(f"   제목: {doc_title}")
-            print(f"   총 블록 수: {len(parsed_doc.blocks)}")
-            
-            if chunk_method == "article" and parsed_doc.blocks:
-                chunks = create_chunks_from_blocks(
-                    parsed_doc,
-                    chunk_size=chunk_size,
-                    overlap=overlap,
-                    method="recursive",
-                    exclude_intro=True,
-                )
+        # === LangGraph 파이프라인 (v9.2) ===
+        print(f"   🔥 LangGraph 파이프라인 사용")
+        
+        result = process_document(
+            filename=filename,
+            content=content,
+            chunk_size=chunk_size,
+            chunk_overlap=overlap,
+            debug=True
+        )
+        
+        if not result.get("success"):
+            errors = result.get("errors", ["알 수 없는 오류"])
+            raise HTTPException(400, f"문서 처리 실패: {errors}")
+        
+        chunks = state_to_chunks(result)
+        
+        # 메타데이터 보강
+        metadata_base = result.get("metadata", {})
+        sop_id = metadata_base.get("doc_id") or metadata_base.get("sop_id")
+        
+        # 🔥 ID가 없으면 파일명에서 끝자리 숫자로라도 유추 시도
+        if not sop_id:
+            import re
+            id_match = re.search(r'([A-Z0-9]+-[A-Z0-9]+-\d+)', filename)
+            if id_match:
+                sop_id = id_match.group(1)
             else:
-                chunks = create_chunks(
-                    parsed_doc.text,
-                    chunk_size=chunk_size,
-                    overlap=overlap,
-                    method=chunk_method
-                )
-                for chunk in chunks:
-                    chunk.metadata.update({
-                        "doc_name": filename,
-                        "doc_title": doc_title,
-                        "sop_id": sop_id,
-                    })
-            
-            # 빈 청크 체크
-            if not chunks:
-                chunks = create_chunks_from_blocks(
-                    parsed_doc,
-                    chunk_size=chunk_size,
-                    overlap=overlap,
-                    method="recursive",
-                    exclude_intro=False,
-                )
-            
-            pipeline_version = "legacy-v6.3"
-            quality_score = None
-            conversion_method = "legacy"
-            metadata_base = parsed_doc.metadata
+                sop_id = filename.split('.')[0] # 최후의 수단: 파일명
+        
+        # 제목 설정: 원본 파일명 유지 (사용자 요청)
+        doc_title = filename 
+        extracted_title = metadata_base.get("title")
+        if extracted_title and extracted_title not in filename:
+            doc_title = f"{filename} ({extracted_title})"
+        
+        print(f"   DOC ID: {sop_id}")
+        print(f"   제목: {doc_title}")
+        print(f"   품질 점수: {result.get('quality_score', 0):.0%}")
+        print(f"   변환 방법: {result.get('conversion_method')}")
+        print(f"   총 청크: {len(chunks)}")
+        
+        pipeline_version = "langgraph-v9.2"
+        quality_score = result.get("quality_score", 0)
+        conversion_method = result.get("conversion_method", "unknown")
         
         if not chunks:
             raise HTTPException(400, "문서에서 텍스트를 추출할 수 없습니다.")
@@ -585,45 +533,10 @@ def _upload_to_neo4j_from_pipeline(graph, result: dict, filename: str):
 # API 엔드포인트 - 검색
 # ═══════════════════════════════════════════════════════════════════════════
 
-@app.post("/rag/search")
-def search_documents(request: SearchRequest):
-    """벡터 검색"""
-    model_path = resolve_model_path(request.model)
-    threshold = request.similarity_threshold or DEFAULT_SIMILARITY_THRESHOLD
-    
-    results = vector_store.search(
-        query=request.query,
-        collection_name=request.collection,
-        model_name=model_path,
-        n_results=request.n_results,
-        filter_doc=request.filter_doc,
-        similarity_threshold=threshold,
-    )
-    
-    return {
-        "query": request.query,
-        "results": results,
-        "count": len(results),
-        "threshold": threshold,
-    }
+# /rag/search 엔드포인트 제거됨 (Agent가 내부 수행)
 
 
-@app.post("/rag/search/advanced")
-def search_advanced(request: SearchRequest):
-    """고급 검색 (품질 메트릭 포함)"""
-    model_path = resolve_model_path(request.model)
-    threshold = request.similarity_threshold or DEFAULT_SIMILARITY_THRESHOLD
-    
-    response = vector_store.search_advanced(
-        query=request.query,
-        collection_name=request.collection,
-        model_name=model_path,
-        n_results=request.n_results,
-        filter_doc=request.filter_doc,
-        similarity_threshold=threshold,
-    )
-    
-    return response
+# /rag/search/advanced 엔드포인트 제거됨
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -632,179 +545,36 @@ def search_advanced(request: SearchRequest):
 
 @app.post("/chat")
 def chat(request: ChatRequest):
-    """대화형 RAG 챗봇 (v10.1 - 되묻기/추적 제거, 소스 형식 수정)"""
-    session_id = request.session_id or str(uuid.uuid4())
+    """
+    Main Agent Chat Endpoint
+    - Manual RAG 로직 제거됨
+    - 오직 Agent Orchestrator를 통해서만 답변
+    """
+    print(f"🤖 [Agent] 요청 수신: {request.message}")
     
-    if session_id not in chat_histories:
-        chat_histories[session_id] = []
-    
-    # 1. 벡터 검색
-    model_path = resolve_model_path(request.embedding_model)
-    threshold = request.similarity_threshold or DEFAULT_SIMILARITY_THRESHOLD
-    
-    results, context = vector_store.search_with_context(
-        query=request.message,
-        collection_name=request.collection,
-        model_name=model_path,
-        n_results=request.n_results,
-        filter_doc=request.filter_doc,
-        similarity_threshold=threshold,
-    )
-    
-    # 🔥 [조정] 컨텍스트가 극단적으로 짧을 때만(예: 400자 미만) 최소한의 보충 수행
-    if len(context) < 400 and len(results) < 10:
-        print(f"⚠️ 컨텍스트가 너무 짧음({len(context)}자). 최소 보충 시도...")
-        extra_results, extra_context = vector_store.search_with_context(
-            query=request.message,
-            collection_name=request.collection,
-            model_name=model_path,
-            n_results=10,  # 15에서 10으로 하향
-            filter_doc=request.filter_doc,
-            similarity_threshold=threshold * 0.7, # 임계값 더 완화하여 주변 맥락 확보
-        )
-        if len(extra_context) > len(context):
-            results, context = extra_results, extra_context
-            print(f"✅ 컨텍스트 보충 완료 ({len(context)}자, {len(results)}개)")
-    
-    # 🔥 디버그 로그
-    print(f"\n{'='*50}")
-    print(f"🔍 질문: {request.message}")
-    print(f"📊 검색 결과: {len(results)}개")
-    if results:
-        for i, r in enumerate(results[:3]):
-            sim = r.get('similarity', 0)
-            meta = r.get('metadata', {})
-            sop = meta.get('sop_id', '?')
-            path = meta.get('section_path', '')[:40] if meta.get('section_path') else ''
-            print(f"   [{i+1}] 유사도: {sim:.2f} | {sop} | {path}...")
-    print(f"📝 컨텍스트 길이: {len(context)} 글자")
-    
-    # 2. LLM 답변 생성 (되묻기 로직 제거!)
-    prompt = build_rag_prompt(request.message, context)
-    print(f"🤖 LLM 호출 시도:")
-    print(f"   - Backend: {request.llm_backend}")
-    print(f"   - Model: {request.llm_model}")
-    print(f"   - Prompt Prefix: {prompt[:100]}...")
-    
-    answer = get_llm_response(
-        prompt=prompt,
-        llm_model=request.llm_model,
-        llm_backend=request.llm_backend,
-        max_tokens=2048 # 🔥 Z.AI 분석과 한국어 답변을 위해 2048 권장
-    )
-    
-    print(f"💬 LLM 결과:")
-    print(f"   - 답변: {answer[:50]}..." if answer else "   - 답변: (EMPTY)")
-    print(f"   - 길이: {len(answer)} 글자")
-    print(f"{'='*50}\n")
-    
-    # 3. 히스토리 저장
-    chat_histories[session_id].append({"role": "user", "content": request.message})
-    chat_histories[session_id].append({"role": "assistant", "content": answer})
-    
-    # 4. 소스 정보 (프론트엔드 형식에 맞춤!)
-    sources = []
-    for r in results:
-        meta = r.get("metadata", {})
-        sources.append({
-            "text": r.get("text", ""),
-            "similarity": r.get("similarity", 0),
-            "metadata": meta,
-            "metadata_display": {
-                "doc_name": meta.get("doc_name", "문서"),
-                "doc_title": meta.get("doc_title", ""),
-                "sop_id": meta.get("sop_id", ""),
-                "version": meta.get("version", ""),
-                "section": meta.get("section", ""),
-                "section_path": meta.get("section_path", ""),
-                "section_path_readable": meta.get("section_path_readable", ""),
-                "title": meta.get("title", ""),
-                "page": meta.get("page", ""),
-            }
-        })
-    
-    return {
-        "session_id": session_id,
-        "answer": answer,
-        "sources": sources,
-        "needs_clarification": False
-    }
-
-
-@app.post("/rag/ask")
-def ask_with_rag(request: AskRequest):
-    """단일 질문 RAG (Question 추적 포함)"""
-    model_path = resolve_model_path(request.embedding_model)
-    threshold = request.similarity_threshold or DEFAULT_SIMILARITY_THRESHOLD
-    
-    # 검색
-    results, context = vector_store.search_with_context(
-        query=request.query,
-        collection_name=request.collection,
-        model_name=model_path,
-        n_results=request.n_results,
-        filter_doc=request.filter_doc,
-        similarity_threshold=threshold,
-    )
-    
-    if not results:
-        return {
-            "query": request.query,
-            "answer": "관련 문서를 찾을 수 없습니다.",
-            "sources": [],
-            "context_used": ""
-        }
-    
-    # 🔥 개선된 컨텍스트 포맷팅
-    formatted_context = format_context(results)
-    prompt = build_rag_prompt(request.query, formatted_context, request.language)
-    
-    answer = get_llm_response(
-        prompt=prompt,
-        llm_model=request.llm_model,
-        llm_backend=request.llm_backend,
-        max_tokens=request.max_tokens
-    )
-    
-    # 🔥 Question 추적 (Neo4j)
-    question_id = None
     try:
-        from backend.graph_store import track_rag_question
-        graph = get_graph_store()
-        if graph.test_connection():
-            question_id = track_rag_question(
-                graph_store=graph,
-                question_text=request.query,
-                search_results=results,
-                answer=answer,
-                embedding_model=request.embedding_model,
-                llm_model=request.llm_model
-            )
+        # Agent 실행
+        # llm.py 업데이트에 따라 model_name 파라미터 등을 적절히 전달
+        init_agent_tools(vector_store, get_graph_store(), sql_store)
+        
+        response = run_agent(
+            query=request.message,
+            session_id=request.session_id or str(uuid.uuid4()),
+            model_name=request.llm_model or "gpt-4o"
+        )
+        
+        return {
+            "session_id": request.session_id,
+            "answer": response.get("answer"),
+            "sources": [], 
+            "agent_log": response
+        }
     except Exception as e:
-        print(f"⚠️ Question 추적 실패: {e}")
-    
-    sources = []
-    if request.include_sources:
-        sources = [
-            {
-                "doc_name": r.get("metadata", {}).get("doc_name"),
-                "sop_id": r.get("metadata", {}).get("sop_id"),
-                "section": r.get("metadata", {}).get("section"),
-                "section_path": r.get("metadata", {}).get("section_path"),
-                "page": r.get("metadata", {}).get("page"),
-                "similarity": r.get("similarity"),
-                "confidence": r.get("confidence"),
-            }
-            for r in results
-        ]
-    
-    return {
-        "query": request.query,
-        "answer": answer,
-        "sources": sources,
-        "question_id": question_id,
-        "context_used": formatted_context[:500] + "..." if len(formatted_context) > 500 else formatted_context
-    }
+        print(f"❌ [Agent] 에러: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(500, str(e))
+
 
 
 @app.get("/chat/history/{session_id}")
@@ -968,37 +738,23 @@ async def graph_upload_document(
         content = await file.read()
         filename = file.filename
         
-        if use_langgraph and LANGGRAPH_AVAILABLE:
-            result = process_document(filename, content, debug=True)
-            if not result.get("success"):
-                raise HTTPException(400, f"처리 실패: {result.get('errors')}")
+        if not LANGGRAPH_AVAILABLE:
+            raise HTTPException(500, "LangGraph 모듈이 필요합니다.")
             
-            graph = get_graph_store()
-            _upload_to_neo4j_from_pipeline(graph, result, filename)
-            
-            return {
-                "success": True,
-                "filename": filename,
-                "sop_id": result.get("metadata", {}).get("sop_id"),
-                "sections": len(result.get("sections", [])),
-                "pipeline": "langgraph"
-            }
-        else:
-            from backend.graph_store import document_to_graph
-            
-            parsed_doc = load_document(filename, content)
-            sop_id = parsed_doc.metadata.get("sop_id")
-            
-            graph = get_graph_store()
-            document_to_graph(graph, parsed_doc, sop_id)
-            
-            return {
-                "success": True,
-                "filename": filename,
-                "sop_id": sop_id,
-                "blocks": len(parsed_doc.blocks),
-                "pipeline": "legacy"
-            }
+        result = process_document(filename, content, debug=True)
+        if not result.get("success"):
+            raise HTTPException(400, f"처리 실패: {result.get('errors')}")
+        
+        graph = get_graph_store()
+        _upload_to_neo4j_from_pipeline(graph, result, filename)
+        
+        return {
+            "success": True,
+            "filename": filename,
+            "sop_id": result.get("metadata", {}).get("sop_id"),
+            "sections": len(result.get("sections", [])),
+            "pipeline": "langgraph"
+        }
             
     except HTTPException:
         raise
@@ -1141,7 +897,6 @@ try:
     from backend.agent import (
         init_agent_tools, 
         run_agent, 
-        create_agent,
         AGENT_TOOLS,
         LANGCHAIN_AVAILABLE,
         LANGGRAPH_AGENT_AVAILABLE,
