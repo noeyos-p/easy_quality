@@ -30,6 +30,9 @@ langgraph
 # === Z.AI (GLM-4.7-Flash) ===
 zai-sdk
 
+# === OpenAI ===
+openai
+
 # === LangSmith (추적/모니터링) ===
 langsmith
 

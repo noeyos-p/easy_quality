@@ -39,26 +39,17 @@ function App() {
   // UI 상태
   const [selectedDocument, setSelectedDocument] = useState<string | null>(null)
   const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set())
+  const [isUploadModalOpen, setIsUploadModalOpen] = useState(false)
+  const [uploadFile, setUploadFile] = useState<File | null>(null)
+  const [isUploading, setIsUploading] = useState(false)
 
-  // 파일 트리 상태
-  const [fileTree] = useState<FileNode[]>([
+  // 파일 트리 상태 (데모 데이터)
+  const [fileTree, setFileTree] = useState<FileNode[]>([
     {
-      name: 'easy_quality',
+      name: 'Uploaded Documents',
       type: 'folder',
       expanded: true,
-      children: [
-        { name: '__pycache__', type: 'folder', icon: '📁' },
-        { name: '.vscode', type: 'folder', icon: '📁' },
-        { name: 'chroma_db', type: 'folder', icon: '📁' },
-        { name: 'frontend', type: 'folder', icon: '📁' },
-        { name: 'rag', type: 'folder', icon: '📁' },
-        { name: '.gitignore', type: 'file', icon: '📄' },
-        { name: 'agent_logic_manual.md', type: 'file', icon: '📝' },
-        { name: 'main.py', type: 'file', icon: '🐍' },
-        { name: 'RAGLOGIC.md', type: 'file', icon: '📝' },
-        { name: 'README.md', type: 'file', icon: '📝' },
-        { name: 'requirements.txt', type: 'file', icon: '📄' },
-      ],
+      children: [], // 업로드된 파일이 여기 추가됨
     },
   ])
 
@@ -71,24 +62,14 @@ function App() {
         const healthResponse = await fetch(`${API_URL}/health`)
         if (healthResponse.ok) {
           setIsConnected(true)
-          setAgentStatus('백엔드 연결됨')
-
-          try {
-            const agentResponse = await fetch(`${API_URL}/agent/status`)
-            if (agentResponse.ok) {
-              const data = await agentResponse.json()
-              setAgentStatus(data.agent_available ? '에이전트 준비됨' : '일반 채팅 모드')
-            }
-          } catch {
-            setAgentStatus('일반 채팅 모드')
-          }
+          setAgentStatus('Agent Ready')
         } else {
           setIsConnected(false)
-          setAgentStatus('백엔드 연결 실패')
+          setAgentStatus('Connection Failed')
         }
       } catch (error) {
         setIsConnected(false)
-        setAgentStatus('백엔드 서버에 연결할 수 없습니다')
+        setAgentStatus('Server Offline')
       }
     }
 
@@ -120,89 +101,100 @@ function App() {
     const startTime = Date.now()
 
     try {
-      let response = await fetch(`${API_URL}/agent/chat`, {
+      // 이제 RAG/일반 분기 없이 오직 Agent Chat만 호출
+      const response = await fetch(`${API_URL}/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           message: messageToSend,
           session_id: sessionId,
-          llm_model: 'glm-4.7-flash',
-          embedding_model: 'multilingual-e5-small',
-          use_langgraph: true,
+          llm_model: 'glm-4.7-flash', // 서브 에이전트용 기본값
         }),
       })
-
-      if (response.status === 404) {
-        console.log('에이전트 API 없음, 테스트 에코 API 사용')
-        response = await fetch(`${API_URL}/test/echo`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            message: messageToSend,
-          }),
-        })
-      }
 
       const thinkingTime = Math.floor((Date.now() - startTime) / 1000)
 
       if (response.ok) {
         const data = await response.json()
 
-        // 디버깅: 받은 데이터 확인
-        console.log('백엔드 응답 데이터:', data)
-
         if (!sessionId) {
           setSessionId(data.session_id)
         }
 
-        // tool_call 태그 제거 및 정리
-        let cleanedAnswer = data.answer || data.message || '응답을 받았습니다.'
+        const answer = data.answer || "답변을 생성하지 못했습니다."
 
-        console.log('원본 답변:', cleanedAnswer)
-
-        // <tool_call>...</tool_call> 태그 제거
-        cleanedAnswer = cleanedAnswer.replace(/<tool_call>.*?<\/tool_call>/gs, '')
-
-        // <arg_key>, <arg_value> 등의 태그 제거
-        cleanedAnswer = cleanedAnswer.replace(/<\/?[^>]+(>|$)/g, '')
-
-        // 앞뒤 공백 제거
-        cleanedAnswer = cleanedAnswer.trim()
-
-        console.log('정리된 답변:', cleanedAnswer)
-
-        // 답변이 비어있으면 기본 메시지 사용
-        if (!cleanedAnswer) {
-          cleanedAnswer = '답변을 처리하는 중 문제가 발생했습니다. 백엔드 로그를 확인해주세요.'
-        }
+        // Agent 로그가 있으면 사고 과정으로 표시
+        const thought = data.agent_log ? JSON.stringify(data.agent_log, null, 2) : "Agent reasoning..."
 
         const assistantMessage: ChatMessage = {
           role: 'assistant',
-          content: cleanedAnswer,
+          content: answer,
           timestamp: new Date(),
-          thoughtProcess: '질문을 분석하고 관련 문서를 검색했습니다.',
+          thoughtProcess: thought,
           thinkingTime: thinkingTime,
         }
 
         setMessages(prev => [...prev, assistantMessage])
       } else {
         const error = await response.json()
-        const errorMessage: ChatMessage = {
+        setMessages(prev => [...prev, {
           role: 'assistant',
-          content: `오류가 발생했습니다: ${error.detail || error.message}`,
-          timestamp: new Date(),
-        }
-        setMessages(prev => [...prev, errorMessage])
+          content: `오류가 발생했습니다: ${error.detail}`,
+          timestamp: new Date()
+        }])
       }
     } catch (error) {
-      const errorMessage: ChatMessage = {
+      setMessages(prev => [...prev, {
         role: 'assistant',
-        content: `네트워크 오류: ${error}. 백엔드가 http://localhost:8000에서 실행 중인지 확인해주세요.`,
-        timestamp: new Date(),
-      }
-      setMessages(prev => [...prev, errorMessage])
+        content: `네트워크 오류: ${error}`,
+        timestamp: new Date()
+      }])
     } finally {
       setIsLoading(false)
+    }
+  }
+
+  const handleUpload = async () => {
+    if (!uploadFile) return
+
+    setIsUploading(true)
+    const formData = new FormData()
+    formData.append('file', uploadFile)
+    // 필요한 경우 추가 필드
+    formData.append('chunk_size', '500')
+    formData.append('use_langgraph', 'true')
+
+    try {
+      const response = await fetch(`${API_URL}/rag/upload`, {
+        method: 'POST',
+        body: formData,
+      })
+
+      if (response.ok) {
+        const data = await response.json()
+        alert(`업로드 성공: ${data.filename} (${data.chunks} chunks)`)
+        setIsUploadModalOpen(false)
+        setUploadFile(null)
+
+        // 파일 트리에 추가 (임시)
+        setFileTree(prev => {
+          const newTree = [...prev]
+          if (newTree[0].children) {
+            newTree[0].children.push({
+              name: data.filename,
+              type: 'file',
+              icon: '📄'
+            })
+          }
+          return newTree
+        })
+      } else {
+        alert('업로드 실패')
+      }
+    } catch (error) {
+      alert(`업로드 에러: ${error}`)
+    } finally {
+      setIsUploading(false)
     }
   }
 
@@ -263,15 +255,12 @@ function App() {
       {/* 헤더 */}
       <header className="header">
         <div className="header-left">
-          <span className="project-name">easy_quality</span>
-        </div>
-        <div className="header-center">
-          <span className="header-action">Open Agent Manager</span>
+          <span className="project-name">Orchestrator Agent</span>
         </div>
         <div className="header-right">
-          <button className="icon-btn">🔍</button>
-          <button className="icon-btn">⚙️</button>
-          <button className="icon-btn">🎨</button>
+          <span className={`status-indicator ${isConnected ? 'connected' : 'disconnected'}`}>
+            {isConnected ? '🟢' : '🔴'} {agentStatus}
+          </span>
         </div>
       </header>
 
@@ -279,19 +268,21 @@ function App() {
         {/* 왼쪽: Explorer */}
         <aside className="explorer">
           <div className="explorer-header">
-            <span className="explorer-title">Explorer</span>
-            <button className="icon-btn-small">⋯</button>
+            <span className="explorer-title">Documents</span>
+            <button
+              className="icon-btn-small"
+              onClick={() => setIsUploadModalOpen(true)}
+              title="Upload Document"
+            >
+              ➕ Upload
+            </button>
           </div>
           <div className="file-tree">
             {renderFileTree(fileTree)}
           </div>
-          <div className="explorer-footer">
-            <button className="footer-btn">📋 Outline</button>
-            <button className="footer-btn">⏱️ Timeline</button>
-          </div>
         </aside>
 
-        {/* 가운데: 문서 뷰어 */}
+        {/* 가운데: 문서 뷰어 (Optional) */}
         <main className="document-viewer">
           {selectedDocument ? (
             <div className="document-content">
@@ -299,15 +290,14 @@ function App() {
                 <h2>📄 {selectedDocument}</h2>
               </div>
               <div className="document-body">
-                <p className="placeholder-text">문서 내용이 여기에 표시됩니다.</p>
-                <p className="placeholder-text">선택한 파일: {selectedDocument}</p>
+                <p>문서 미리보기 기능은 준비 중입니다.</p>
+                <p>선택된 파일: {selectedDocument}</p>
               </div>
             </div>
           ) : (
             <div className="empty-state">
               <div className="empty-icon">📄</div>
-              <h2>문서를 선택하세요</h2>
-              <p>왼쪽 Explorer에서 파일을 선택하면 내용이 표시됩니다.</p>
+              <h2>Select a document</h2>
             </div>
           )}
         </main>
@@ -315,35 +305,17 @@ function App() {
         {/* 오른쪽: Agent 패널 */}
         <aside className="agent-panel">
           <div className="agent-header">
-            <span className="agent-title">Agent</span>
-            <div className="agent-controls">
-              <button className="icon-btn-small">➕</button>
-              <button className="icon-btn-small">🔄</button>
-              <button className="icon-btn-small">⋯</button>
-              <button className="icon-btn-small">✕</button>
-            </div>
+            <span className="agent-title">Agent Chat</span>
           </div>
 
           <div className="agent-content">
-            {/* 상태 표시 */}
-            <div className="agent-status-bar">
-              <span className={`status-indicator ${isConnected ? 'connected' : 'disconnected'}`}>
-                {isConnected ? '🟢' : '🔴'}
-              </span>
-              <span className="status-text">{agentStatus}</span>
-            </div>
-
             {/* 채팅 영역 */}
             <div className="agent-messages-container">
               {messages.map((msg, index) => (
                 <div key={index} className={`agent-conversation ${msg.role}`}>
                   {msg.role === 'user' ? (
                     <div className="user-input-display">
-                      <div className="user-input-header">
-                        <span className="user-input-icon">💬</span>
-                        <span className="user-input-text">{msg.content}</span>
-                        <button className="undo-btn">↶</button>
-                      </div>
+                      <span className="user-input-text">{msg.content}</span>
                     </div>
                   ) : (
                     <div className="assistant-response">
@@ -357,28 +329,13 @@ function App() {
                             <span className="chevron">
                               {expandedSections.has(`thought-${index}`) ? '▼' : '▶'}
                             </span>
-                            <span className="thought-title">Thought Process</span>
+                            <span className="thought-title">Show Reasoning</span>
                           </div>
                           {expandedSections.has(`thought-${index}`) && (
-                            <div className="thought-content">
+                            <pre className="thought-content">
                               {msg.thoughtProcess}
-                            </div>
+                            </pre>
                           )}
-                        </div>
-                      )}
-
-                      {/* Thinking Time */}
-                      {msg.thinkingTime && (
-                        <div className="thought-section">
-                          <div
-                            className="thought-header"
-                            onClick={() => toggleSection(`time-${index}`)}
-                          >
-                            <span className="chevron">
-                              {expandedSections.has(`time-${index}`) ? '▼' : '▶'}
-                            </span>
-                            <span className="thought-title">Thought for {msg.thinkingTime}s</span>
-                          </div>
                         </div>
                       )}
 
@@ -386,6 +343,10 @@ function App() {
                       <div className="response-body">
                         {msg.content}
                       </div>
+
+                      {msg.thinkingTime && (
+                        <div className="meta-info">Time: {msg.thinkingTime}s</div>
+                      )}
                     </div>
                   )}
                 </div>
@@ -394,11 +355,7 @@ function App() {
               {isLoading && (
                 <div className="agent-conversation assistant">
                   <div className="assistant-response">
-                    <div className="typing-indicator">
-                      <span></span>
-                      <span></span>
-                      <span></span>
-                    </div>
+                    <div className="typing-indicator">Processing request...</div>
                   </div>
                 </div>
               )}
@@ -412,18 +369,12 @@ function App() {
                   value={inputMessage}
                   onChange={(e) => setInputMessage(e.target.value)}
                   onKeyPress={handleKeyPress}
-                  placeholder="Ask anything (⌘L), @ to mention, / for workflow"
+                  placeholder="Ask the Agent..."
                   className="agent-input"
                   rows={1}
                 />
-              </div>
-              <div className="input-actions">
-                <button className="action-btn">➕</button>
-                <button className="action-btn">📋 Planning</button>
-                <button className="action-btn">⚡ Gemini 3 Flash</button>
-                <button className="action-btn">🎤</button>
                 <button
-                  className="action-btn send-btn"
+                  className="send-btn"
                   onClick={sendMessage}
                   disabled={isLoading || !inputMessage.trim()}
                 >
@@ -435,18 +386,24 @@ function App() {
         </aside>
       </div>
 
-      {/* 하단 상태바 */}
-      <footer className="statusbar">
-        <div className="statusbar-left">
-          <span className="status-item">⚡ main*</span>
-          <span className="status-item">🔄</span>
-          <span className="status-item">⊘ 0 ⚠ 0</span>
+      {/* 업로드 모달 */}
+      {isUploadModalOpen && (
+        <div className="modal-overlay">
+          <div className="modal-content">
+            <h3>Upload Document</h3>
+            <input
+              type="file"
+              onChange={(e) => setUploadFile(e.target.files ? e.target.files[0] : null)}
+            />
+            <div className="modal-actions">
+              <button onClick={() => setIsUploadModalOpen(false)}>Cancel</button>
+              <button onClick={handleUpload} disabled={!uploadFile || isUploading}>
+                {isUploading ? 'Uploading...' : 'Upload'}
+              </button>
+            </div>
+          </div>
         </div>
-        <div className="statusbar-right">
-          <span className="status-item">Antigravity - Settings</span>
-          <span className="status-item">🔔</span>
-        </div>
-      </footer>
+      )}
     </div>
   )
 }
