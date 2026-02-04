@@ -379,6 +379,62 @@ def search(
     return search_results[:n_results]
 
 
+def search_hybrid(
+    query: str,
+    collection_name: str = DEFAULT_COLLECTION,
+    n_results: int = 5,
+    model_name: str = "intfloat/multilingual-e5-small",
+    alpha: float = 0.5,
+    filter_doc: Optional[str] = None,
+) -> List[Dict]:
+    """v4: collection.query.hybrid() 활용 (Hybrid Search)"""
+    actual_name = get_collection_name_for_model(collection_name, model_name)
+    client = get_client()
+
+    if not client.collections.exists(actual_name): return []
+    
+    vector = embed_text(query, model_name)
+    collection = client.collections.get(actual_name)
+    
+    # 필터 구성
+    filters = None
+    if filter_doc:
+        filters = Filter.by_property("doc_name").equal(filter_doc)
+    
+    # 쿼리 실행
+    try:
+        res = collection.query.hybrid(
+            query=query,
+            vector=vector,
+            alpha=alpha,
+            limit=n_results,
+            filters=filters,
+            return_metadata=MetadataQuery(score=True, explain_score=True)
+        )
+
+        search_results = []
+        for obj in res.objects:
+            score = obj.metadata.score if obj.metadata.score is not None else 0.0
+            
+            try:
+                meta = json.loads(obj.properties.get('metadata_json', '{}'))
+            except:
+                meta = obj.properties
+                
+            search_results.append({
+                "text": obj.properties.get('text', ""),
+                "similarity": round(score, 4),
+                "metadata": meta,
+                "id": str(obj.uuid),
+                "confidence": "high" if score > 0.7 else "medium" if score > 0.4 else "low",
+            })
+        return search_results
+    except Exception as e:
+        print(f"❌ Hybrid search failed: {e}")
+        # Fallback to normal search
+        return search(query, collection_name, n_results, model_name, filter_doc)
+
+
 def search_advanced(
     query: str,
     collection_name: str = DEFAULT_COLLECTION,

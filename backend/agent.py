@@ -1,6 +1,6 @@
 """
 SOP 멀티 에이전트 시스템 v13.0
-- Orchestrator (Main): OpenAI (GPT-4o) - 질문 분석 및 라우팅, 최종 답변
+- Orchestrator (Main): OpenAI (GPT-4o-mini) - 질문 분석 및 라우팅, 최종 답변
 - Specialized Sub-Agents: Z.AI (GLM-4.7) - 실행 및 데이터 처리
   1. Retrieval Agent: 문서 검색 및 추출
   2. Summarization Agent: 문서/조항 요약
@@ -82,41 +82,77 @@ def get_zai_client():
 @tool
 def search_sop_tool(query: str, extract_english: bool = False, keywords: List[str] = None) -> str:
     """SOP 문서 검색 도구.
+    Hybrid Search(BM25 + Vector) 방식을 사용하여 키워드와 의미론적 연관성을 동시에 고려합니다.
     extract_english: True면 영문 내용 위주로 추출
     """
-    global _sql_store, _vector_store
+    global _vector_store, _sql_store
     
     results = []
-    seen_ids = set()
+    seen_content = set() # 중복 내용 방지
     
-    # 1. SQL 키워드 검색
-    if _sql_store and keywords:
-        all_docs = _sql_store.list_documents()
-        for doc in all_docs:
-            sop_doc = _sql_store.get_document_by_id(doc['sop_id'])
-            if not sop_doc: continue
-            
-            content = sop_doc.get("markdown_content", "")
-            # 키워드 매칭 (단순화)
-            if any(k.upper() in doc['sop_id'].upper() for k in keywords):
-                if extract_english:
-                    # 영문 추출 로직 (알파벳 비율이 높은 문단만 필터링)
-                    eng_paras = [p for p in content.split('\n\n') if len(re.findall(r'[a-zA-Z]', p)) > len(re.findall(r'[가-힣]', p))]
-                    results.append(f"📄 [영문 발췌] {doc['sop_id']}:\n" + "\n".join(eng_paras[:5]))
-                else:
-                    results.append(f"📄 [전체 본문] {doc['sop_id']}:\n{content[:3000]}...")
-                seen_ids.add(doc['sop_id'])
-    
-    # 2. 벡터 검색
+    # 1. 벡터 스토어의 하이브리드 검색 활용 (v8.0+)
     if _vector_store:
-        vec_res = _vector_store.search(query, n_results=5)
+        search_query = query
+        if keywords:
+            # 키워드가 있으면 쿼리에 보강하여 BM25 점수 가중치 부여
+            search_query += " " + " ".join(keywords)
+            
+        # 하이브리드 검색 수행 (alpha=0.4: 키워드 비중 약간 높임)
+        vec_res = []
+        try:
+            # vector_store 모듈에 구현된 search_hybrid 호출
+            vec_res = _vector_store.search_hybrid(search_query, n_results=10, alpha=0.4)
+        except AttributeError:
+            # 만약 구현이 아직 안되었다면 기본 search 사용
+            vec_res = _vector_store.search(search_query, n_results=10)
+            
         for r in vec_res:
             meta = r.get('metadata', {})
-            sop_id = meta.get('sop_id')
-            if sop_id not in seen_ids:
-                results.append(f"📄 [검색] {sop_id} > {meta.get('section', '')}:\n{r.get('text', '')}")
+            sop_id = meta.get('sop_id') or meta.get('doc_name', 'Unknown')
+            section = meta.get('section') or meta.get('clause') or "본문"
+            content = r.get('text', '')
+            
+            if not content: continue
+            
+            # 해시로 중복 체크
+            content_hash = hashlib.md5(content.encode()).hexdigest()
+            if content_hash in seen_content: continue
+            seen_content.add(content_hash)
+            
+            display_header = f"📄 [검색] {sop_id} > {section}"
+            
+            if extract_english:
+                # 영문 추출 로직: 알파벳 비율이 한글보다 높은 문단 필터링
+                paragraphs = content.split('\n\n')
+                eng_paras = []
+                for p in paragraphs:
+                    eng_count = len(re.findall(r'[a-zA-Z]', p))
+                    kor_count = len(re.findall(r'[가-힣]', p))
+                    if eng_count > kor_count and eng_count > 10:
+                        eng_paras.append(p)
                 
-    return "\n\n".join(results) if results else "검색 결과 없음"
+                if eng_paras:
+                    results.append(f"{display_header} (영문):\n" + "\n\n".join(eng_paras[:3]))
+                else:
+                    results.append(f"{display_header}:\n{content[:1500]}...")
+            else:
+                results.append(f"{display_header}:\n{content}")
+
+    # 2. 결과가 전혀 없거나 매우 적을 경우 SQL 키워드 매칭 (보조/확정적 검색)
+    if len(results) < 2 and _sql_store and keywords:
+        all_docs = _sql_store.list_documents()
+        for doc in all_docs:
+            doc_name = doc.get('doc_name', '')
+            # 문서명에 키워드가 포함된 경우
+            if any(k.upper() in doc_name.upper() for k in keywords):
+                doc_id = doc.get('id')
+                sop_doc = _sql_store.get_document_by_id(doc_id)
+                if sop_doc:
+                    full_content = sop_doc.get("content", "")
+                    if full_content:
+                        results.append(f"📄 [문서 전체 가이드] {doc_name}:\n{full_content[:2000]}...")
+                
+    return "\n\n".join(results) if results else "검색 결과 없음. 검색어나 키워드를 바꿔보세요."
 
 @tool
 def get_version_history_tool(sop_id: str) -> str:
@@ -168,7 +204,7 @@ class AgentState(TypedDict):
 
 def orchestrator_node(state: AgentState):
     """
-    메인 에이전트 (OpenAI GPT-4o)
+    메인 에이전트 (OpenAI GPT-4o-mini)
     - 사용자의 질문을 분석하여 적절한 서브 에이전트로 라우팅하거나 최종 답변을 생성
     """
     client = get_openai_client()
@@ -199,7 +235,7 @@ def orchestrator_node(state: AgentState):
     
     try:
         response = client.chat.completions.create(
-            model="gpt-4o",
+            model="gpt-4o-mini",
             messages=[{"role": "system", "content": system_prompt}] + messages,
             temperature=0.1,
             response_format={"type": "json_object"}
@@ -213,7 +249,7 @@ def orchestrator_node(state: AgentState):
         if next_action == "finish":
             # 한 번 더 호출하여 자연어 답변 생성
             final_res = client.chat.completions.create(
-                model="gpt-4o",
+                model="gpt-4o-mini",
                 messages=[{"role": "system", "content": "수집된 정보를 바탕으로 사용자에게 친절하게 최종 답변을 하세요. 한국어로 답변해."}] + messages
             )
             return {"next_agent": "end", "final_answer": final_res.choices[0].message.content}

@@ -119,7 +119,8 @@ def extract_document_metadata(text: str, filename: str) -> Dict:
     
     metadata = {"file_name": filename}
     try:
-        llm_res = get_llm_response(prompt, max_tokens=4096, temperature=0.1)
+        # GPT-4o-mini: JSON 추출에 최적화
+        llm_res = get_llm_response(prompt, llm_model="gpt-4o-mini", max_tokens=4096, temperature=0.1)
         json_match = re.search(r'\{.*\}', llm_res, re.DOTALL)
         if json_match:
             llm_meta = json.loads(json_match.group(0))
@@ -178,7 +179,8 @@ JSON만 출력:
 {{"content_type": "...", "main_topic": "...", "sub_topics": [...], "actors": [...], "actions": [...], "conditions": [...], "summary": "...", "intent_scope": "...", "intent_summary": "...", "language": "..."}}"""
 
     try:
-        llm_res = get_llm_response(prompt, max_tokens=4096, temperature=0.1)
+        # GPT-4o-mini: 빠르고 정확한 조항별 메타데이터 JSON 추출
+        llm_res = get_llm_response(prompt, llm_model="gpt-4o-mini", max_tokens=4096, temperature=0.1)
         # 🔥 processor 방식: JSON 파싱
         result_text = llm_res.strip()
 
@@ -614,7 +616,8 @@ def detect_content_start_with_llm(markdown: str) -> Optional[str]:
 {sample_text}
 """
     try:
-        anchor = get_llm_response(prompt, max_tokens=100, temperature=0.1).strip()
+        # Z.AI: 한국어 문서 구조 및 조항 시작 지점 파악에 탁월
+        anchor = get_llm_response(prompt, llm_backend="zai", max_tokens=100, temperature=0.1).strip()
         if not anchor or "START" in anchor.upper():
             return None
         # Anchor가 너무 길면 무시 (정확한 매칭을 위해)
@@ -650,7 +653,8 @@ def discover_structure_with_llm(markdown: str) -> List[Dict]:
 {sample_text}
 """
     try:
-        llm_res = get_llm_response(prompt, max_tokens=4000, temperature=0.1)
+        # Z.AI: 복잡한 SOP 계층 구조를 누락 없이 분석하는 데 유리
+        llm_res = get_llm_response(prompt, llm_backend="zai", max_tokens=4000, temperature=0.1)
         json_match = re.search(r'\[.*\]', llm_res, re.DOTALL)
         if json_match:
             discovered = json.loads(json_match.group(0))
