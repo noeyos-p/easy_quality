@@ -261,6 +261,7 @@ async def upload_document(
     model: str = Form("multilingual-e5-small"),
     overlap: int = Form(DEFAULT_OVERLAP),
     use_langgraph: bool = Form(True),  # 🔥 LangGraph 사용 여부
+    use_llm_metadata: bool = Form(False),  # 🔥 LLM 메타데이터 추출 사용 여부
 ):
     """
     문서 업로드 (LangGraph v9.2 파이프라인)
@@ -285,13 +286,16 @@ async def upload_document(
             
         # === LangGraph 파이프라인 (v9.2) ===
         print(f"   🔥 LangGraph 파이프라인 사용")
-        
+        print(f"   🔥 LLM 메타데이터 추출: {'활성화' if use_llm_metadata else '비활성화'}")
+
         result = process_document(
             filename=filename,
             content=content,
             chunk_size=chunk_size,
             chunk_overlap=overlap,
-            debug=True
+            debug=True,
+            use_llm_metadata=use_llm_metadata,
+            use_clause_parsing=True  # GXP 문서 조항 번호 기반 파싱
         )
         
         if not result.get("success"):
@@ -419,6 +423,7 @@ async def upload_document(
             "conversion_method": conversion_method,
             "graph_uploaded": graph_uploaded,
             "elapsed_seconds": elapsed,
+            "metadata": metadata_base,  # 🔥 전체 메타데이터 반환
             "sample_metadata": metadatas[0] if metadatas else {},
         }
         

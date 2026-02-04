@@ -43,27 +43,29 @@ class PipelineState(TypedDict):
     # 입력
     filename: str
     content: bytes
-    
+
     # 설정
     chunk_size: int
     chunk_overlap: int
-    
+    use_llm_metadata: bool  # LLM 메타데이터 추출 사용 여부
+    use_clause_parsing: bool  # 조항 번호 기반 파싱 사용 여부
+
     # 중간 결과
     file_type: str
     markdown: str
     metadata: Dict
     sections: List[Dict]
     chunks: List[Dict]
-    
+
     # 품질 지표
     quality_score: float
     conversion_method: str
-    
+
     # 에러 처리
     errors: Annotated[List[str], operator.add]
     warnings: Annotated[List[str], operator.add]
     retry_count: int
-    
+
     # 최종 결과
     success: bool
 
@@ -134,7 +136,7 @@ def extract_document_metadata(text: str, filename: str) -> Dict:
 
 def extract_clause_metadata(text: str, doc_info: Dict, section_name: str) -> Dict:
     """
-    조항(Clause) 단위 상세 메타데이터 추출
+    조항(Clause) 단위 상세 메타데이터 추출 (processor 방식)
     """
     # 🔥 너무 짧은 내용은 분석 스킵
     clean_text = text.strip()
@@ -142,55 +144,86 @@ def extract_clause_metadata(text: str, doc_info: Dict, section_name: str) -> Dic
         return {}
 
     # print(f"🧠 [Clause Scan] {section_name} 상세 분석 중...")
-    
-    prompt = f"""당신은 GMP 규정 지능형 분석가입니다. 다음 조항의 텍스트를 분석하여 구조화된 메타데이터를 생성하세요.
 
-[추출 필드]
-1. content_type: 목적, 정의, 책임, 절차, 기준, 기록, 기타 중 하나
-2. main_topic: 핵심 주제 (3~5단어)
-3. sub_topics: 세부 주제 리스트 (쉼표로 구분)
-4. actors: 관련 담당자나 역할 (쉼표 구분)
-5. actions: 수행해야 하는 행위나 절차 (쉼표 구분)
-6. conditions: 특수 조건이나 전제 상황
-7. summary: 30자 이내의 한 문장 요약
-8. intent_scope: 관리 영역 (예: user_account, training, document_lifecycle 등)
-9. intent_summary: 질문 의도 분석용 영어 요약문 (영어로 작성)
-10. language: ko 또는 en
+    prompt = f"""당신은 GMP 문서 분석 전문가입니다.
+다음 문서 청크를 분석해서 검색에 유용한 메타데이터를 추출하세요.
 
-결과는 반드시 아래 JSON 형식으로만 답변하세요.
-{{
-  "content_type": "",
-  "main_topic": "",
-  "sub_topics": "",
-  "actors": "",
-  "actions": "",
-  "conditions": "",
-  "summary": "",
-  "intent_scope": "",
-  "intent_summary": "",
-  "language": "ko"
-}}
+## 청크 정보
+- 조항번호: {section_name}
+- 제목: {section_name}
+- 내용:
+{text[:1000]}
 
-[문서 정보: {doc_info.get('doc_id')} - {doc_info.get('title')}]
-[조항 제목: {section_name}]
-[주의사항]
-생각 과정(Reasoning)은 가능한 짧게 하거나 생략하고, 반드시 JSON 형식으로만 응답하세요.
+## 추출할 메타데이터
+다음 항목들을 JSON 형식으로 추출하세요:
 
-[조항 내용]
-{text[:2000]}"""
+1. content_type: 이 청크가 설명하는 내용의 유형 (예: 목적, 정의, 책임, 절차, 기준, 기록, 참고문헌 등)
+2. main_topic: 이 청크의 핵심 주제
+3. sub_topics: 관련 세부 주제들 (리스트, 최대 3개)
+4. actors: 언급된 역할자/담당자 (리스트)
+5. actions: 수행해야 하는 행위/절차 (리스트, 최대 3개)
+6. conditions: 특수 조건이나 상황 (리스트)
+7. summary: 한 문장 요약 (30자 이내)
+8. intent_scope: 이 조항이 다루는 관리 영역 (다음 중 1개만 선택)
+   - user_account: 사용자 계정·권한·역할 관리
+   - document_lifecycle: 문서의 수명주기 (작성, 승인, 개정, 폐기 등)
+   - system_configuration: 시스템 설정 or 구조 변경
+   - audit_evidence: 감사대응에 관련한 자료
+   - training: 교육, 훈련, 자격
+9. intent_summary: 이 조항이 어떤 질문에 답하는지를 영어 1문장으로 요약 (예: "What is the purpose of Level 1 quality manual?")
+10. language: 이 청크의 주요 언어 ("ko" 또는 "en")
+
+## 출력
+JSON만 출력:
+{{"content_type": "...", "main_topic": "...", "sub_topics": [...], "actors": [...], "actions": [...], "conditions": [...], "summary": "...", "intent_scope": "...", "intent_summary": "...", "language": "..."}}"""
 
     try:
         llm_res = get_llm_response(prompt, max_tokens=4096, temperature=0.1)
-        json_match = re.search(r'(\{.*\})', llm_res, re.DOTALL)
-        if json_match:
-            res = json.loads(json_match.group(1))
-            # 🔥 호환성 보장
-            if 'doc_id' not in res and doc_info.get('doc_id'):
-                res['doc_id'] = doc_info.get('doc_id')
-            return res
+        # 🔥 processor 방식: JSON 파싱
+        result_text = llm_res.strip()
+
+        # JSON 코드 블록 처리
+        if "```" in result_text:
+            json_match = result_text.split("```")[1]
+            if json_match.startswith("json"):
+                json_match = json_match[4:]
+            result_text = json_match.strip()
+
+        res = json.loads(result_text)
+
+        # 리스트를 쉼표 구분 문자열로 변환 (기존 pipeline 방식과 호환)
+        if isinstance(res.get('sub_topics'), list):
+            res['sub_topics'] = ', '.join(res['sub_topics'])
+        if isinstance(res.get('actors'), list):
+            res['actors'] = ', '.join(res['actors'])
+        if isinstance(res.get('actions'), list):
+            res['actions'] = ', '.join(res['actions'])
+        if isinstance(res.get('conditions'), list):
+            res['conditions'] = ', '.join(res['conditions'])
+
+        # 호환성 보장
+        if 'doc_id' not in res and doc_info.get('doc_id'):
+            res['doc_id'] = doc_info.get('doc_id')
+
+        return res
+    except json.JSONDecodeError as e:
+        print(f"⚠️ [Clause Scan] JSON 파싱 실패: {e}")
+        return {
+            "content_type": "",
+            "main_topic": "",
+            "sub_topics": "",
+            "actors": "",
+            "actions": "",
+            "conditions": "",
+            "summary": "",
+            "intent_scope": "",
+            "intent_summary": "",
+            "language": "ko"
+        }
     except Exception as e:
         print(f"⚠️ [Clause Scan] 실패: {e}")
-    
+        return {}
+
     return {}
 
 
@@ -285,9 +318,12 @@ def node_convert(state: PipelineState) -> PipelineState:
             state["conversion_method"] = "fallback-text"
             state["warnings"] = [f"알 수 없는 파일 타입: {file_type}, 텍스트로 처리"]
         
-        # 🔥 문서 메타데이터 추출
-        doc_meta = extract_document_metadata(markdown, filename)
-        metadata.update(doc_meta)
+        # 🔥 문서 메타데이터 추출 (옵션)
+        if state.get("use_llm_metadata", False):
+            doc_meta = extract_document_metadata(markdown, filename)
+            metadata.update(doc_meta)
+        else:
+            print(f"   ℹ️ LLM 메타데이터 추출 비활성화 (기본 메타데이터만 사용)")
         
         state["markdown"] = markdown
         state["metadata"].update(metadata)
@@ -429,19 +465,125 @@ def node_repair(state: PipelineState) -> PipelineState:
     return state
 
 
+def split_by_clause(markdown: str, max_level: int = 4) -> List[Dict]:
+    """
+    조항 번호 기준으로 분할 (1., 1.1, 1.1.1, 1.1.1.1)
+
+    Args:
+        markdown: 마크다운 텍스트
+        max_level: 최대 조항 깊이 (0=무제한)
+
+    Returns:
+        [
+            {
+                "clause": "1.1",
+                "title": "세부 목적",
+                "content": "조항 내용...",
+                "level": 1,  # 점(.)의 개수
+                "parent_clauses": ["1"]  # 상위 조항들
+            },
+            ...
+        ]
+    """
+    lines = markdown.split('\n')
+    clauses = []
+
+    # 조항 번호 패턴: 1. / 1.1 / 1.1.1 / 1.1.1.1
+    clause_pattern = re.compile(r'^(?:#+\s*)?(\d+(?:\.\d+)*)\s+(.+?)$')
+
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+
+        # 헤더에서 조항 번호 제거 (예: "## 1. 목적" → "1. 목적")
+        line = re.sub(r'^#+\s*', '', line)
+
+        match = clause_pattern.match(line)
+
+        if match:
+            clause_num = match.group(1)
+            title_and_rest = match.group(2).strip()
+
+            # 레벨 계산
+            level = clause_num.count('.')
+
+            # max_level 체크
+            if max_level > 0 and level > max_level:
+                i += 1
+                continue
+
+            # 제목과 내용 분리
+            title = title_and_rest
+            content_lines = []
+            i += 1
+
+            # 다음 조항을 찾을 때까지 내용 수집
+            while i < len(lines):
+                next_line = lines[i].strip()
+                next_line_clean = re.sub(r'^#+\s*', '', next_line)
+
+                # 다음 조항인지 확인
+                next_match = clause_pattern.match(next_line_clean)
+                if next_match:
+                    next_clause = next_match.group(1)
+
+                    # 다른 조항(같은 레벨 이상)이면 종료
+                    if not next_clause.startswith(clause_num + '.'):
+                        break
+                    # 하위 조항도 별도로 파싱하므로 종료
+                    else:
+                        break
+
+                content_lines.append(lines[i])
+                i += 1
+
+            content = '\n'.join(content_lines).strip()
+
+            # 상위 조항 계산
+            parent_clauses = []
+            parts = clause_num.split('.')
+            for j in range(len(parts) - 1):
+                parent_clauses.append('.'.join(parts[:j+1]))
+
+            clauses.append({
+                "clause": clause_num,
+                "title": title,
+                "content": content,
+                "level": level,
+                "parent_clauses": parent_clauses
+            })
+        else:
+            i += 1
+
+    return clauses
+
+
 def node_split(state: PipelineState) -> PipelineState:
     """
-    4단계: 헤더 기준 분할 + 계층 구조 구축
+    4단계: 조항 또는 헤더 기준 분할 + 계층 구조 구축
     """
     markdown = state.get("markdown", "")
-    
+    use_clause_parsing = state.get("use_clause_parsing", True)
+
     if not markdown:
         state["sections"] = []
         return state
-    
+
+    # 조항 번호 기반 파싱 우선 시도
+    if use_clause_parsing:
+        sections = split_by_clause(markdown, max_level=0)  # 🔥 모든 하위 조항 파싱 (무제한)
+        if sections:
+            # 조항 기반 섹션에 페이지 정보 추가
+            for section in sections:
+                section["page"] = 1  # 기본값
+                section["parent"] = None  # parent_clauses에서 유추 가능
+            state["sections"] = sections
+            return state
+
+    # 헤더 기반 파싱 (폴백 또는 기본)
     lines = markdown.split('\n')
     sections = []
-    
+
     current_headers = {1: None, 2: None, 3: None, 4: None, 5: None, 6: None}
     current_content = []
     current_page = 1
@@ -529,6 +671,7 @@ def node_optimize(state: PipelineState) -> PipelineState:
     chunk_size = state.get("chunk_size", 500)
     chunk_overlap = state.get("chunk_overlap", 50)
     doc_meta = state.get("metadata", {})
+    use_llm_metadata = state.get("use_llm_metadata", False)
     
     chunks = []
     idx = 0
@@ -567,10 +710,10 @@ def node_optimize(state: PipelineState) -> PipelineState:
         # 🔥 조항별 상세 메타데이터 추출 (AI) - 순차 처리로 복구
         # 제목이 있고, 조항 번호가 있으며, 본문이 100자 이상인 경우에만 분석
         clause_meta = {}
-        if current_section_title != "Untitled" and clause_id and len(content.strip()) > 100:
+        if use_llm_metadata and current_section_title != "Untitled" and clause_id and len(content.strip()) > 100:
             print(f"   🔎 [{sections.index(section)+1}/{len(sections)}] 조항 분석 중: {current_section_title}")
             clause_meta = extract_clause_metadata(content, doc_meta, current_section_title)
-        
+
         section["clause_meta"] = clause_meta
 
     # 2단계: 최적화 및 청크 생성
@@ -1155,7 +1298,9 @@ def process_document(
     content: bytes,
     chunk_size: int = 500,
     chunk_overlap: int = 50,
-    debug: bool = False
+    debug: bool = False,
+    use_llm_metadata: bool = False,  # LLM 메타데이터 추출 사용 여부
+    use_clause_parsing: bool = True  # 조항 번호 기반 파싱 사용 여부
 ) -> dict:
     """문서 처리 메인 함수"""
     
@@ -1164,6 +1309,8 @@ def process_document(
         "content": content,
         "chunk_size": chunk_size,
         "chunk_overlap": chunk_overlap,
+        "use_llm_metadata": use_llm_metadata,  # LLM 메타데이터 추출 옵션
+        "use_clause_parsing": use_clause_parsing,  # 조항 번호 기반 파싱 옵션
         "file_type": "",
         "markdown": "",
         "metadata": {},
