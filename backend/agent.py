@@ -447,8 +447,8 @@ def run_agent(query: str, session_id: str = "default", model_name: str = None, e
         "model_name": model_name # 하위 호환성 유지
     }
     
-    # LangGraph 실행
-    result = _app.invoke(initial_state)
+    # LangGraph 실행 (무한 루프 방지를 위해 recursion_limit 설정)
+    result = _app.invoke(initial_state, config={"recursion_limit": 5})
     
     return {
         "answer": result.get("final_answer", "답변을 생성하지 못했습니다."),
