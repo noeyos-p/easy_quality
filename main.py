@@ -20,6 +20,7 @@ from typing import List, Dict, Optional
 import torch
 import time
 import uuid
+import re
 
 from backend.sql_store import SQLStore
 sql_store = SQLStore()
@@ -496,13 +497,20 @@ def _upload_to_neo4j_from_pipeline(graph, result: dict, filename: str):
                 current_title = headers[f"H{level}"]
                 break
         
-        clause_id = None
-        import re
-        num_match = re.match(r'^(\d+(?:\.\d+)*)', current_title)
-        if num_match:
-            clause_id = num_match.group(1)
+        clause_id = sec.get("clause")
+        if not clause_id:
+            num_match = re.match(r'^(\d+(?:\.\d+)*)', current_title)
+            if num_match:
+                clause_id = num_match.group(1)
         
-        if not clause_id: continue
+        # 번호가 정말 없으면 무시하거나 보충
+        if not clause_id:
+            # 제목이 있다면 제목의 해시 등을 쓸 수도 있으나 일단 필수 정보로 간주하여 필터링 강화
+            # 단, 'Untitled'는 아니어야 함
+            if current_title and current_title != "Untitled":
+                 clause_id = f"SEC-{headers.get('H1', '0')[:5]}" # 임시 ID
+            else:
+                continue
         
         section_id = f"{doc_id}:{clause_id}"
         main_section = clause_id.split('.')[0] if '.' in clause_id else clause_id
@@ -521,12 +529,13 @@ def _upload_to_neo4j_from_pipeline(graph, result: dict, filename: str):
         
         # 4. 계층 관계 (Parent-Child)
         if parent_name:
-            # 부모 ID 유추 (단순화: 같은 문서 내에서 점 하나 뺀 패턴)
-            if '.' in clause_id:
-                parent_clause_id = '.'.join(clause_id.split('.')[:-1])
-                parent_section_id = f"{doc_id}:{parent_clause_id}"
-                graph.create_section_hierarchy(parent_section_id, section_id)
-        
+            # 파이프라인에서 제공한 상위 조항 정보 활용
+            parent_section_id = f"{doc_id}:{parent_name}"
+            graph.create_section_hierarchy(parent_section_id, section_id)
+        elif '.' in clause_id:
+            parent_clause_id = '.'.join(clause_id.split('.')[:-1])
+            parent_section_id = f"{doc_id}:{parent_clause_id}"
+            graph.create_section_hierarchy(parent_section_id, section_id)
         # 5. Concept 연동 (intent_scope 활용)
         intent_scope = clause_meta.get("intent_scope")
         if intent_scope:

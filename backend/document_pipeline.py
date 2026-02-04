@@ -475,8 +475,14 @@ CLAUSE_PATTERNS = [
     # 1. 숫자 계층형 (1., 1.1, 5.2.1)
     {
         "name": "numeric_dot",
-        "pattern": re.compile(r'^(\d+(?:\.\d+)*)\.?\s*(.*?)$'),
+        "pattern": re.compile(r'^(\d+(?:\.\d+)*)\.?\s+(.*?)$'), # 마침표 뒤 공백 필수 (1. 제목)
         "level_func": lambda m: m.count('.')
+    },
+    # 1.1 숫자 단순형 (마침표 없는 번호 + 제목) -> 1 제목
+    {
+        "name": "numeric_simple",
+        "pattern": re.compile(r'^(\d+)\s+([가-힣\w].*)$'), 
+        "level_func": lambda m: 0
     },
     # 2. 한국어 법령/규정형 (제1조, 제12조)
     {
@@ -490,13 +496,19 @@ CLAUSE_PATTERNS = [
         "pattern": re.compile(r'^([가-힣])\.\s*(.*?)$'),
         "level_func": lambda m: 1
     },
-    # 4. 괄호 숫자형 ((1), (2))
+    # 4. 괄호 숫자형 ((1), (2) 또는 1), 2))
     {
         "name": "bracket_numeric",
-        "pattern": re.compile(r'^\((\d+)\)\s*(.*?)$'),
+        "pattern": re.compile(r'^\(?(\d+)\)\s*(.*?)$'),
         "level_func": lambda m: 2
     },
-    # 5. 영문 대문자형 (A., B., C.)
+    # 5. 원문자 숫자형 (①, ②)
+    {
+        "name": "circle_numeric",
+        "pattern": re.compile(r'^([①-⑳])\s*(.*?)$'),
+        "level_func": lambda m: 2
+    },
+    # 6. 영문 대문자형 (A., B., C.)
     {
         "name": "en_uppercase",
         "pattern": re.compile(r'^([A-Z])\.\s*(.*?)$'),
@@ -705,6 +717,18 @@ def node_split(state: PipelineState) -> PipelineState:
                 if not section.get("parent") and section.get("parent_clauses"):
                     section["parent"] = section["parent_clauses"][-1]
                 
+                # 🔥 [V22.1 Normalization] headers 가 없는 경우 (split_by_clause/AI 결과) 보충
+                if "headers" not in section:
+                    clause_num = section.get("clause", "")
+                    title = section.get("title", "Untitled")
+                    full_title = f"{clause_num} {title}".strip() if clause_num else title
+                    level = section.get("level", 0)
+                    h_level = min(6, level + 1) # Level 0 -> H1, Level 1 -> H2
+                    
+                    section["headers"] = {f"H{h_level}": full_title}
+                    section["header_path"] = full_title
+                    # 상위 경로가 있다면 더 보강 가능하겠으나 현재는 이정도면 충분
+                
             state["sections"] = sections
             print(f"   ✅ [Split] {len(sections)}개의 개별 조항이 추출되었습니다.")
             return state
@@ -800,7 +824,7 @@ def node_optimize(state: PipelineState) -> PipelineState:
         # 조항 번호 및 제목 추출
         current_section_title = headers.get(f"H{clause_level}") or "Untitled"
         clause_id = None
-        num_match = re.match(r'(\d+(?:\.\d+)*)', current_section_title)
+        num_match = re.search(r'([제]?\d+(?:\.\d+)*[조]?)', current_section_title)
         if num_match:
             clause_id = num_match.group(1)
             
@@ -821,6 +845,7 @@ def node_optimize(state: PipelineState) -> PipelineState:
             clause_meta = extract_clause_metadata(content, doc_meta, current_section_title)
 
         section["clause_meta"] = clause_meta
+        idx += 1 # 🔥 다음 섹션을 위해 인덱스 증가 (누락 방지)
 
     # 2단계: 최적화 및 청크 생성
     for section in sections:
