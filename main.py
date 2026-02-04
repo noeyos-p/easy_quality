@@ -271,7 +271,7 @@ async def upload_document(
     model: str = Form("multilingual-e5-small"),
     overlap: int = Form(DEFAULT_OVERLAP),
     use_langgraph: bool = Form(True),  # 🔥 LangGraph 사용 여부
-    use_llm_metadata: bool = Form(False),  # 🔥 LLM 메타데이터 추출 사용 여부
+    use_llm_metadata: bool = Form(True),  # 🔥 LLM 메타데이터 추출 사용 여부
 ):
     """
     문서 업로드 (LangGraph v9.2 파이프라인)

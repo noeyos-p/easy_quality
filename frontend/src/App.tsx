@@ -56,7 +56,7 @@ function App() {
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false)
   const [uploadFile, setUploadFile] = useState<File | null>(null)
   const [isUploading, setIsUploading] = useState(false)
-  const [useLlmMetadata, setUseLlmMetadata] = useState(false)
+  const [useLlmMetadata, setUseLlmMetadata] = useState(true)
   const [uploadProgress, setUploadProgress] = useState<string>('')
 
   // 파일 트리 상태 (데모 데이터)
@@ -224,7 +224,7 @@ function App() {
           setIsUploadModalOpen(false)
           setUploadFile(null)
           setUploadProgress('')
-          setUseLlmMetadata(false)
+          setUseLlmMetadata(true)
         }, 2000)
       } else {
         const error = await response.json()
