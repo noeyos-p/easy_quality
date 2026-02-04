@@ -573,7 +573,7 @@ def chat(request: ChatRequest):
         response = run_agent(
             query=request.message,
             session_id=request.session_id or str(uuid.uuid4()),
-            model_name=request.llm_model or "gpt-4o"
+            model_name=request.llm_model or "gpt-4o-mini"
         )
         
         return {
