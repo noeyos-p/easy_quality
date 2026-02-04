@@ -197,7 +197,9 @@ class AgentState(TypedDict):
     next_agent: Literal["retrieval", "summary", "comparison", "graph", "end"]
     final_answer: str
     context: str
-    model_name: Optional[str] # 동적 모델 선택을 위한 필드 추가
+    model_name: Optional[str] # (레거시 호환용)
+    worker_model: Optional[str] # 서브 에이전트(Worker)용 모델
+    orchestrator_model: Optional[str] # 오케스트레이터용 모델
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 노드 정의 (Nodes)
@@ -283,7 +285,7 @@ def retrieval_agent_node(state: AgentState):
     요약해서 핵심만 전달하세요."""
     
     res = client.chat.completions.create(
-        model=state.get("model_name") or "glm-4.7-flash", # 동적 모델 적용
+        model=state.get("worker_model") or state.get("model_name") or "glm-4.7-flash", # 동적 모델 적용
         messages=[{"role": "user", "content": prompt}]
     )
     
@@ -331,7 +333,7 @@ def summary_agent_node(state: AgentState):
         user_content = f"다음 문서를 요약하세요.\n질문: {query}\n\n[문서 본문]\n{search_res}"
 
     res = client.chat.completions.create(
-        model=model,
+        model=state.get("worker_model") or state.get("model_name") or "glm-4.7-flash", # 동적 모델 적용
         messages=[
             {"role": "system", "content": system_content},
             {"role": "user", "content": user_content}
@@ -351,7 +353,7 @@ def comparison_agent_node(state: AgentState):
     # 여기서는 데모용으로 하드코딩된 로직 대신 LLM에게 추출 유도 가능
     
     res = client.chat.completions.create(
-        model=state.get("model_name") or "glm-4.7-flash", # 동적 모델 적용
+        model=state.get("worker_model") or state.get("model_name") or "glm-4.7-flash", # 동적 모델 적용
         messages=[{"role": "user", "content": f"사용자 질문 '{query}'에서 문서 ID와 버전 두 개를 추출해서 JSON으로 줘. 형식: {{'id': '...', 'v1': '...', 'v2': '...'}} "}]
     )
     try:
@@ -359,7 +361,7 @@ def comparison_agent_node(state: AgentState):
         comp_res = compare_versions_tool.invoke({"sop_id": info['id'], "v1": info['v1'], "v2": info['v2']})
         
         final_res = client.chat.completions.create(
-            model=state.get("model_name") or "glm-4.7-flash", # 동적 모델 적용
+            model=state.get("worker_model") or state.get("model_name") or "glm-4.7-flash", # 동적 모델 적용
             messages=[{"role": "user", "content": f"두 버전의 차이점을 분석해줘:\n{comp_res}"}]
         )
         content = final_res.choices[0].message.content
@@ -440,7 +442,9 @@ def run_agent(query: str, session_id: str = "default", model_name: str = None, e
         "query": query,
         "messages": [{"role": "user", "content": query}],
         "next_agent": "orchestrator",
-        "model_name": model_name # 모델 정보 주입
+        "worker_model": model_name or "glm-4.7-flash", # 워커 모델 명시
+        "orchestrator_model": "gpt-4o-mini", # 오케스트레이터 모델 명시
+        "model_name": model_name # 하위 호환성 유지
     }
     
     # LangGraph 실행
