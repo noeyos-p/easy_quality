@@ -27,7 +27,15 @@ class SQLStore:
         return psycopg2.connect(**self.config)
 
     def init_db(self):
-        """스키마 초기화: 문서, 청크, 사용자, 메모리 테이블 생성"""
+        """스키마 초기화: 문서 기반 통합 관리 테이블 생성"""
+        # 연결 정보 출력
+        host = self.config.get("host", "localhost")
+        if host in ["localhost", "127.0.0.1"]:
+            print(f"🏠 [SQLStore] PostgreSQL: 로컬호스트 연결 중 ({host})")
+        else:
+            print(f"🌐 [SQLStore] PostgreSQL: 원격 DB 연결 중 ({host})")
+            
+        # sop_id의 UNIQUE 제약조건을 제거하고 (sop_id, version) 복합 유니크를 권장하지만,
         query = """
         -- users 테이블
         CREATE TABLE IF NOT EXISTS users (
