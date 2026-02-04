@@ -214,6 +214,19 @@ def delete_collection(collection_name: str) -> bool:
         return False
 
 
+def close_client():
+    """Weaviate 클라이언트 연결 종료"""
+    global _client
+    if _client is not None:
+        try:
+            _client.close()
+            print("🛑 Weaviate 연결 종료됨")
+        except Exception as e:
+            print(f"⚠️ Weaviate 종료 중 오류: {e}")
+        finally:
+            _client = None
+
+
 def ensure_collection(client: weaviate.WeaviateClient, collection_name: str):
     """v4: 스키마 생성 (Properties + Config)"""
     if not client.collections.exists(collection_name):

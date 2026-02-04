@@ -48,11 +48,24 @@ class Neo4jGraphStore:
     
     def connect(self):
         """Neo4j 연결"""
+        is_aura = "databases.neo4j.io" in self.uri
+        if is_aura:
+            print(f"☁️ [Neo4j] Cloud(Aura) 연결 시도 중... ({self.uri})")
+        else:
+            print(f"🏠 [Neo4j] 로컬/원격 연결 시도 중... ({self.uri})")
+
         if not self.driver:
-            self.driver = GraphDatabase.driver(
-                self.uri, 
-                auth=(self.user, self.password)
-            )
+            try:
+                self.driver = GraphDatabase.driver(
+                    self.uri, 
+                    auth=(self.user, self.password)
+                )
+                # 연결 즉시 확인
+                if self.test_connection():
+                    success_msg = "✅ Neo4j Aura 연결 성공!" if is_aura else f"✅ Neo4j 연결 성공! ({self.uri})"
+                    print(success_msg)
+            except Exception as e:
+                print(f"❌ Neo4j 드라이버 생성 실패: {e}")
         return self
     
     def close(self):

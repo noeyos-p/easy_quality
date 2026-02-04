@@ -23,7 +23,7 @@ import uuid
 
 from backend.sql_store import SQLStore
 sql_store = SQLStore()
-sql_store.init_db()
+# sql_store.init_db()  # 🔥 main()으로 이동하여 중복 호출 방지
 
 # RAG 모듈 - 레거시 (폴백용)
 # RAG 모듈 - 레거시 (폴백용) 제거됨
@@ -58,6 +58,16 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.on_event("shutdown")
+def shutdown_event():
+    """서버 종료 시 리소스 정리"""
+    print("\n🛑 서버 종료 중...")
+    vector_store.close_client()
+    if _graph_store:
+        _graph_store.close()
+        print("🛑 Neo4j 연결 종료됨")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -366,19 +376,24 @@ async def upload_document(
             else:
                 full_markdown = "\n\n".join([c.text for c in chunks])
 
-            sql_store.save_document(
-                sop_id=sop_id,
-                title=doc_title or filename,
-                markdown_content=full_markdown,
-                pdf_binary=content if filename.lower().endswith(".pdf") else None,
-                doc_metadata={
-                    "doc_id": metadata_base.get("doc_id"),
-                    "version": metadata_base.get("version"),
-                    "effective_date": metadata_base.get("effective_date"),
-                    "owning_dept": metadata_base.get("owning_dept"),
-                    "filename": filename
-                }
+            doc_id_db = sql_store.save_document(
+                doc_name=sop_id,
+                content=full_markdown,
+                doc_type=filename.split('.')[-1] if '.' in filename else None,
+                version=metadata_base.get("version", "1.0")
             )
+            
+            # 🔥 청크 정보도 PostgreSQL에 저장 (문서-청크 연결)
+            if doc_id_db and chunks:
+                batch_chunks = [
+                    {
+                        "clause": c.metadata.get("clause_id"),
+                        "content": c.text,
+                        "metadata": c.metadata
+                    }
+                    for c in chunks
+                ]
+                sql_store.save_chunks_batch(doc_id_db, batch_chunks)
         except Exception as sql_err:
             print(f"   ⚠️ PostgreSQL 상세 저장 실패: {sql_err}")
             # 폴백: 기존 유저 코드 방식 (필요 시)
@@ -1033,19 +1048,23 @@ def test_echo(request: SimpleRequest):
 # ═══════════════════════════════════════════════════════════════════════════
 
 def main():
+    print("🚦 시스템 초기화 중...")
     sql_store.init_db()
     
-    # Weaviate 연결 확인
+    # Neo4j 연결 확인 (성공 로그는 connect 내부에서 출력됨)
+    try:
+        get_graph_store()
+    except Exception as e:
+        print(f"❌ Neo4j 초기 연결 실패: {e}")
+
+    # Weaviate 연결 확인 (성공 로그는 get_client 내부에서 출력됨)
     try:
         wv_client = vector_store.get_client()
-        if wv_client.is_connected():
-            print("✅ Weaviate v4 연결 성공")
-        else:
-            print("❌ Weaviate v4 연결 실패")
+        if not wv_client.is_connected():
+            print("❌ Weaviate v4 연결 상태 확인 실패")
     except Exception as e:
         print(f"❌ Weaviate v4 연결 체크 중 오류: {e}")
 
-    print("🚀 RAG 시스템 시작")
     
     import uvicorn
     
