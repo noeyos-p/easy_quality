@@ -11,6 +11,19 @@ interface FileNode {
   icon?: string
   children?: FileNode[]
   expanded?: boolean
+  metadata?: DocumentMetadata
+}
+
+interface DocumentMetadata {
+  doc_id?: string
+  sop_id?: string
+  title?: string
+  version?: string
+  effective_date?: string
+  owning_dept?: string
+  total_chunks?: number
+  quality_score?: number
+  conversion_method?: string
 }
 
 interface ChatMessage {
@@ -38,10 +51,13 @@ function App() {
 
   // UI 상태
   const [selectedDocument, setSelectedDocument] = useState<string | null>(null)
+  const [selectedDocMetadata, setSelectedDocMetadata] = useState<DocumentMetadata | null>(null)
   const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set())
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false)
   const [uploadFile, setUploadFile] = useState<File | null>(null)
   const [isUploading, setIsUploading] = useState(false)
+  const [useLlmMetadata, setUseLlmMetadata] = useState(false)
+  const [uploadProgress, setUploadProgress] = useState<string>('')
 
   // 파일 트리 상태 (데모 데이터)
   const [fileTree, setFileTree] = useState<FileNode[]>([
@@ -158,11 +174,13 @@ function App() {
     if (!uploadFile) return
 
     setIsUploading(true)
+    setUploadProgress('파일 업로드 중...')
     const formData = new FormData()
     formData.append('file', uploadFile)
-    // 필요한 경우 추가 필드
     formData.append('chunk_size', '500')
+    formData.append('chunk_overlap', '50')
     formData.append('use_langgraph', 'true')
+    formData.append('use_llm_metadata', useLlmMetadata.toString())
 
     try {
       const response = await fetch(`${API_URL}/rag/upload`, {
@@ -172,27 +190,48 @@ function App() {
 
       if (response.ok) {
         const data = await response.json()
-        alert(`업로드 성공: ${data.filename} (${data.chunks} chunks)`)
-        setIsUploadModalOpen(false)
-        setUploadFile(null)
 
-        // 파일 트리에 추가 (임시)
+        // 메타데이터 구성
+        const metadata: DocumentMetadata = {
+          doc_id: data.metadata?.doc_id || data.sop_id,
+          sop_id: data.sop_id,
+          title: data.doc_title || data.filename,
+          version: data.metadata?.version,
+          effective_date: data.metadata?.effective_date,
+          owning_dept: data.metadata?.owning_dept,
+          total_chunks: data.chunks,
+          quality_score: data.quality_score,
+          conversion_method: data.conversion_method,
+        }
+
+        setUploadProgress(`[OK] 업로드 완료!\n파일: ${data.filename}\n청크: ${data.chunks}개\n품질: ${(data.quality_score * 100).toFixed(0)}%`)
+
+        // 파일 트리에 추가
         setFileTree(prev => {
           const newTree = [...prev]
           if (newTree[0].children) {
             newTree[0].children.push({
               name: data.filename,
               type: 'file',
-              icon: '📄'
+              icon: '[FILE]',
+              metadata: metadata
             })
           }
           return newTree
         })
+
+        setTimeout(() => {
+          setIsUploadModalOpen(false)
+          setUploadFile(null)
+          setUploadProgress('')
+          setUseLlmMetadata(false)
+        }, 2000)
       } else {
-        alert('업로드 실패')
+        const error = await response.json()
+        setUploadProgress(`[ERROR] 업로드 실패: ${error.detail}`)
       }
     } catch (error) {
-      alert(`업로드 에러: ${error}`)
+      setUploadProgress(`[ERROR] 네트워크 오류: ${error}`)
     } finally {
       setIsUploading(false)
     }
@@ -228,13 +267,14 @@ function App() {
           onClick={() => {
             if (node.type === 'file') {
               setSelectedDocument(node.name)
+              setSelectedDocMetadata(node.metadata || null)
             }
           }}
         >
           {node.type === 'folder' && (
             <span className="tree-chevron">{node.expanded ? '▼' : '▶'}</span>
           )}
-          <span className="tree-icon">{node.icon || (node.type === 'folder' ? '📁' : '📄')}</span>
+          <span className="tree-icon">{node.icon || (node.type === 'folder' ? '[DIR]' : '[FILE]')}</span>
           <span className="tree-name">{node.name}</span>
         </div>
         {node.expanded && node.children && (
@@ -259,7 +299,7 @@ function App() {
         </div>
         <div className="header-right">
           <span className={`status-indicator ${isConnected ? 'connected' : 'disconnected'}`}>
-            {isConnected ? '🟢' : '🔴'} {agentStatus}
+            {isConnected ? '[OK]' : '[ERROR]'} {agentStatus}
           </span>
         </div>
       </header>
@@ -274,7 +314,7 @@ function App() {
               onClick={() => setIsUploadModalOpen(true)}
               title="Upload Document"
             >
-              ➕ Upload
+              + Upload
             </button>
           </div>
           <div className="file-tree">
@@ -287,16 +327,76 @@ function App() {
           {selectedDocument ? (
             <div className="document-content">
               <div className="document-header">
-                <h2>📄 {selectedDocument}</h2>
+                <h2>[FILE] {selectedDocument}</h2>
               </div>
               <div className="document-body">
-                <p>문서 미리보기 기능은 준비 중입니다.</p>
-                <p>선택된 파일: {selectedDocument}</p>
+                {selectedDocMetadata ? (
+                  <div className="metadata-section">
+                    <h3>[METADATA] 문서 메타데이터</h3>
+                    <table className="metadata-table">
+                      <tbody>
+                        {selectedDocMetadata.doc_id && (
+                          <tr>
+                            <td className="label">문서 ID:</td>
+                            <td className="value">{selectedDocMetadata.doc_id}</td>
+                          </tr>
+                        )}
+                        {selectedDocMetadata.title && (
+                          <tr>
+                            <td className="label">제목:</td>
+                            <td className="value">{selectedDocMetadata.title}</td>
+                          </tr>
+                        )}
+                        {selectedDocMetadata.version && (
+                          <tr>
+                            <td className="label">버전:</td>
+                            <td className="value">{selectedDocMetadata.version}</td>
+                          </tr>
+                        )}
+                        {selectedDocMetadata.effective_date && (
+                          <tr>
+                            <td className="label">시행일:</td>
+                            <td className="value">{selectedDocMetadata.effective_date}</td>
+                          </tr>
+                        )}
+                        {selectedDocMetadata.owning_dept && (
+                          <tr>
+                            <td className="label">담당부서:</td>
+                            <td className="value">{selectedDocMetadata.owning_dept}</td>
+                          </tr>
+                        )}
+                        {selectedDocMetadata.total_chunks && (
+                          <tr>
+                            <td className="label">총 청크 수:</td>
+                            <td className="value">{selectedDocMetadata.total_chunks}</td>
+                          </tr>
+                        )}
+                        {selectedDocMetadata.quality_score !== undefined && (
+                          <tr>
+                            <td className="label">품질 점수:</td>
+                            <td className="value">{(selectedDocMetadata.quality_score * 100).toFixed(0)}%</td>
+                          </tr>
+                        )}
+                        {selectedDocMetadata.conversion_method && (
+                          <tr>
+                            <td className="label">변환 방법:</td>
+                            <td className="value">{selectedDocMetadata.conversion_method}</td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <>
+                    <p>문서 미리보기 기능은 준비 중입니다.</p>
+                    <p>선택된 파일: {selectedDocument}</p>
+                  </>
+                )}
               </div>
             </div>
           ) : (
             <div className="empty-state">
-              <div className="empty-icon">📄</div>
+              <div className="empty-icon">[FILE]</div>
               <h2>Select a document</h2>
             </div>
           )}
@@ -378,7 +478,7 @@ function App() {
                   onClick={sendMessage}
                   disabled={isLoading || !inputMessage.trim()}
                 >
-                  ➤
+                  &gt;
                 </button>
               </div>
             </div>
@@ -390,15 +490,45 @@ function App() {
       {isUploadModalOpen && (
         <div className="modal-overlay">
           <div className="modal-content">
-            <h3>Upload Document</h3>
-            <input
-              type="file"
-              onChange={(e) => setUploadFile(e.target.files ? e.target.files[0] : null)}
-            />
+            <h3>[UPLOAD] Upload Document</h3>
+            <div className="upload-form">
+              <input
+                type="file"
+                onChange={(e) => setUploadFile(e.target.files ? e.target.files[0] : null)}
+                accept=".pdf,.docx,.doc,.html,.md,.txt"
+                className="file-input"
+              />
+
+              <div className="upload-options">
+                <label className="checkbox-label">
+                  <input
+                    type="checkbox"
+                    checked={useLlmMetadata}
+                    onChange={(e) => setUseLlmMetadata(e.target.checked)}
+                  />
+                  <span>AI 기반 메타데이터 추출 활성화</span>
+                </label>
+                <p className="option-description">
+                  문서 ID, 제목, 버전, 시행일, 담당부서 등을 AI가 자동으로 추출합니다
+                </p>
+              </div>
+
+              {uploadProgress && (
+                <div className="upload-progress">
+                  <pre>{uploadProgress}</pre>
+                </div>
+              )}
+            </div>
+
             <div className="modal-actions">
-              <button onClick={() => setIsUploadModalOpen(false)}>Cancel</button>
+              <button onClick={() => {
+                setIsUploadModalOpen(false)
+                setUploadFile(null)
+                setUploadProgress('')
+                setUseLlmMetadata(false)
+              }}>Cancel</button>
               <button onClick={handleUpload} disabled={!uploadFile || isUploading}>
-                {isUploading ? 'Uploading...' : 'Upload'}
+                {isUploading ? '[WAIT] Uploading...' : '[OK] Upload'}
               </button>
             </div>
           </div>
