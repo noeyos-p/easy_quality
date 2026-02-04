@@ -427,7 +427,15 @@ def delete_all(collection_name: str = DEFAULT_COLLECTION, model_name: Optional[s
 
 def list_documents(collection_name: str = DEFAULT_COLLECTION, model_name: Optional[str] = None) -> List[Dict]:
     """문서 목록 조회 (v4 iterator 활용)"""
-    actual_classes = [get_collection_name_for_model(collection_name, model_name)] if model_name else [c for c in list_collections() if c.startswith(collection_name)]
+    # v4에서는 PascalCase를 사용하므로 대소문자 무시하고 매칭
+    all_cols = list_collections()
+    
+    if model_name:
+        actual_classes = [get_collection_name_for_model(collection_name, model_name)]
+    else:
+        # prefix 매칭 (대소문자 무시)
+        prefix = collection_name.lower()
+        actual_classes = [c for c in all_cols if c.lower().startswith(prefix)]
     
     docs = {}
     client = get_client()

@@ -465,102 +465,208 @@ def node_repair(state: PipelineState) -> PipelineState:
     return state
 
 
-def split_by_clause(markdown: str, max_level: int = 4) -> List[Dict]:
+# ═══════════════════════════════════════════════════════════════════════════
+# 조항 추출 엔진 (Pattern Registry)
+# ═══════════════════════════════════════════════════════════════════════════
+
+CLAUSE_PATTERNS = [
+    # 1. 숫자 계층형 (1., 1.1, 5.2.1)
+    {
+        "name": "numeric_dot",
+        "pattern": re.compile(r'^(\d+(?:\.\d+)*)\.?\s*(.*?)$'),
+        "level_func": lambda m: m.count('.')
+    },
+    # 2. 한국어 법령/규정형 (제1조, 제12조)
+    {
+        "name": "ko_article",
+        "pattern": re.compile(r'^(제\s*\d+\s*조)\s*(.*?)$'),
+        "level_func": lambda m: 0
+    },
+    # 3. 한국어 순서형 (가., 나., 다.)
+    {
+        "name": "ko_alphabet",
+        "pattern": re.compile(r'^([가-힣])\.\s*(.*?)$'),
+        "level_func": lambda m: 1
+    },
+    # 4. 괄호 숫자형 ((1), (2))
+    {
+        "name": "bracket_numeric",
+        "pattern": re.compile(r'^\((\d+)\)\s*(.*?)$'),
+        "level_func": lambda m: 2
+    },
+    # 5. 영문 대문자형 (A., B., C.)
+    {
+        "name": "en_uppercase",
+        "pattern": re.compile(r'^([A-Z])\.\s*(.*?)$'),
+        "level_func": lambda m: 1
+    }
+]
+
+def split_by_clause(markdown: str, max_level: int = 0) -> List[Dict]:
     """
-    조항 번호 기준으로 분할 (1., 1.1, 1.1.1, 1.1.1.1)
-
-    Args:
-        markdown: 마크다운 텍스트
-        max_level: 최대 조항 깊이 (0=무제한)
-
-    Returns:
-        [
-            {
-                "clause": "1.1",
-                "title": "세부 목적",
-                "content": "조항 내용...",
-                "level": 1,  # 점(.)의 개수
-                "parent_clauses": ["1"]  # 상위 조항들
-            },
-            ...
-        ]
+    유연한 조항 추출 엔진: 정규식 레지스트리를 순회하며 매칭되는 모든 조항 분할
     """
     lines = markdown.split('\n')
     clauses = []
-
-    # 조항 번호 패턴: 1. / 1.1 / 1.1.1 / 1.1.1.1
-    clause_pattern = re.compile(r'^(?:#+\s*)?(\d+(?:\.\d+)*)\s+(.+?)$')
+    
+    # 현재 매칭된 패턴 이름 (문서 내 일관성 유지 시도)
+    active_pattern_names = set()
 
     i = 0
     while i < len(lines):
         line = lines[i].strip()
+        if not line:
+            i += 1
+            continue
 
-        # 헤더에서 조항 번호 제거 (예: "## 1. 목적" → "1. 목적")
-        line = re.sub(r'^#+\s*', '', line)
-
-        match = clause_pattern.match(line)
-
+        # 헤더 마커 제거
+        clean_line = re.sub(r'^#+\s*', '', line)
+        
+        # 패턴 매칭 시도
+        match = None
+        matched_pattern = None
+        for p in CLAUSE_PATTERNS:
+            m = p["pattern"].match(clean_line)
+            if m:
+                # 조항 번호 뒤에 제목이 없더라도 인식 (번호만 있는 라인 방어)
+                num = m.group(1)
+                title = m.group(2).strip() or f"Section {num}"
+                match = m
+                matched_pattern = p
+                break
+        
         if match:
             clause_num = match.group(1)
-            title_and_rest = match.group(2).strip()
-
-            # 레벨 계산
-            level = clause_num.count('.')
-
-            # max_level 체크
+            title = match.group(2).strip() or f"Section {clause_num}"
+            level = matched_pattern["level_func"](clause_num)
+            
+            # max_level 필터 (0이면 무제한)
             if max_level > 0 and level > max_level:
                 i += 1
                 continue
-
-            # 제목과 내용 분리
-            title = title_and_rest
+                
             content_lines = []
             i += 1
-
-            # 다음 조항을 찾을 때까지 내용 수집
+            
+            # 다음 조항이 나올 때까지 수집
             while i < len(lines):
                 next_line = lines[i].strip()
-                next_line_clean = re.sub(r'^#+\s*', '', next_line)
-
-                # 다음 조항인지 확인
-                next_match = clause_pattern.match(next_line_clean)
-                if next_match:
-                    next_clause = next_match.group(1)
-
-                    # 다른 조항(같은 레벨 이상)이면 종료
-                    if not next_clause.startswith(clause_num + '.'):
+                if not next_line:
+                    content_lines.append(lines[i])
+                    i += 1
+                    continue
+                    
+                next_clean = re.sub(r'^#+\s*', '', next_line)
+                
+                # 다음 라인이 어떤 조항 패턴에 걸리는지 확인
+                is_next_clause = False
+                for p in CLAUSE_PATTERNS:
+                    if p["pattern"].match(next_clean):
+                        is_next_clause = True
                         break
-                    # 하위 조항도 별도로 파싱하므로 종료
-                    else:
-                        break
-
+                
+                if is_next_clause:
+                    break
+                    
                 content_lines.append(lines[i])
                 i += 1
-
+            
             content = '\n'.join(content_lines).strip()
-
-            # 상위 조항 계산
+            
+            # 계층 구조 (숫자형일 때만 부모 계산)
             parent_clauses = []
-            parts = clause_num.split('.')
-            for j in range(len(parts) - 1):
-                parent_clauses.append('.'.join(parts[:j+1]))
-
+            if matched_pattern["name"] == "numeric_dot":
+                parts = clause_num.split('.')
+                for j in range(len(parts) - 1):
+                    parent_clauses.append('.'.join(parts[:j+1]))
+            
             clauses.append({
                 "clause": clause_num,
                 "title": title,
                 "content": content,
                 "level": level,
-                "parent_clauses": parent_clauses
+                "parent_clauses": parent_clauses,
+                "pattern": matched_pattern["name"]
             })
         else:
             i += 1
-
+            
     return clauses
 
+
+def detect_content_start_with_llm(markdown: str) -> Optional[str]:
+    """
+    LLM을 사용하여 문서 헤더/목차 구간이 끝나고 실제 본문 조항이 시작되는 지점의 텍스트(Anchor)를 찾습니다.
+    (예: "5.10.3", "제1조" 등)
+    """
+    sample_text = markdown[:5000]
+    
+    prompt = f"""당신은 GMP 문서 구조 분석 전문가입니다.
+다음 마크다운 문서 내용을 보고, 문서 정보(SOP Number, Version 등)와 목차(ToC)가 완전히 종료되고,
+실제 실행 지침이나 조항(Clause)이 본격적으로 시작되는 첫 번째 문장이나 조항 번호를 찾으세요.
+
+[작업 규칙]
+1. 본문이 시작되는 지점의 텍스트(예: "5.1", "제1조", "1. 목적")를 정확히 한 문장만 출력하세요.
+2. 만약 문서의 처음부터 바로 본문이 시작된다면 "START"라고 답변하세요.
+3. 생각 과정 없이 결과 텍스트만 출력하세요.
+
+[문서 샘플]
+{sample_text}
+"""
+    try:
+        anchor = get_llm_response(prompt, max_tokens=100, temperature=0.1).strip()
+        if not anchor or "START" in anchor.upper():
+            return None
+        # Anchor가 너무 길면 무시 (정확한 매칭을 위해)
+        if len(anchor) > 100:
+            return None
+        return anchor
+    except:
+        return None
+
+def discover_structure_with_llm(markdown: str) -> List[Dict]:
+    """
+    정규식 매칭이 실패할 경우, LLM을 사용하여 문서 전체의 조항들을 계층적으로 찾아냅니다.
+    """
+    # 문서가 길 경우 분할 분석이 필요할 수 있으나, 일단 넉넉하게 분석
+    sample_text = markdown[:15000] 
+    
+    prompt = f"""당신은 전문 문서 구조화 엔진입니다.
+다음 마크다운 문서에서 '모든 조항(Clause)' 또는 '섹션'을 누락 없이 찾아내어 JSON 리스트로 응답하세요.
+
+[출력 형식]
+[
+  {{"clause": "번호", "title": "제목(한글/영문 포함)", "content": "해당 조항의 전문"}},
+  ...
+]
+
+[작업 규칙]
+1. 문서에 존재하는 모든 조항을 빠짐없이 포함하세요. (개수 제한 없음)
+2. 번호가 없는 단락은 제목의 핵심 키워드를 번호 대신 사용하거나 생략하세요.
+3. 한글과 영문이 혼용된 경우 제목에 두 언어를 모두 포함하세요.
+4. JSON 데이터 외에 어떤 텍스트도 출력하지 마세요.
+
+[문서 내용]
+{sample_text}
+"""
+    try:
+        llm_res = get_llm_response(prompt, max_tokens=4000, temperature=0.1)
+        json_match = re.search(r'\[.*\]', llm_res, re.DOTALL)
+        if json_match:
+            discovered = json.loads(json_match.group(0))
+            for item in discovered:
+                item["level"] = 0
+                item["parent_clauses"] = []
+                item["pattern"] = "ai_discovered"
+            return discovered
+    except:
+        return []
+    return []
 
 def node_split(state: PipelineState) -> PipelineState:
     """
     4단계: 조항 또는 헤더 기준 분할 + 계층 구조 구축
+    🔥 v9.5: SOP 최적화 (개별 조항 정밀 파싱)
     """
     markdown = state.get("markdown", "")
     use_clause_parsing = state.get("use_clause_parsing", True)
@@ -569,32 +675,48 @@ def node_split(state: PipelineState) -> PipelineState:
         state["sections"] = []
         return state
 
-    # 조항 번호 기반 파싱 우선 시도
+    # 1. 지능형 시작 지점 식별 (헤더/목차 스킵)
+    start_anchor = detect_content_start_with_llm(markdown)
+    effective_markdown = markdown
+    if start_anchor:
+        anchor_idx = markdown.find(start_anchor)
+        if anchor_idx >= 0:
+            print(f"   🎯 [ToC/Header Skip] '{start_anchor[:20]}...' 지점부터 본문 파싱을 시작합니다.")
+            effective_markdown = markdown[anchor_idx:]
+
+    # 2. 조항 번호 기반 정규식 파싱 시도
     if use_clause_parsing:
-        sections = split_by_clause(markdown, max_level=0)  # 🔥 모든 하위 조항 파싱 (무제한)
+        sections = split_by_clause(effective_markdown, max_level=0)
+        
+        # 🔥 [Structure Discovery Fallback] 정규식으로 하나도 안 잡힐 때만 AI 동원
+        if not sections and len(effective_markdown) > 300:
+            print("   🔍 [Structure Discovery] 정규식 매칭 실패, AI 기반 정밀 구조 분석 수행 중...")
+            sections = discover_structure_with_llm(effective_markdown)
+            
         if sections:
-            # 조항 기반 섹션에 페이지 정보 추가
+            # 후처리: 계층 구조(Graph DB용) 및 메타데이터 보강
             for section in sections:
-                section["page"] = 1  # 기본값
-                section["parent"] = None  # parent_clauses에서 유추 가능
+                section["page"] = 1 # 기본값
+                # 상위 관계 추출 (정규식 파싱 결과에 parent_clauses가 있음)
+                if not section.get("parent") and section.get("parent_clauses"):
+                    section["parent"] = section["parent_clauses"][-1]
+                
             state["sections"] = sections
+            print(f"   ✅ [Split] {len(sections)}개의 개별 조항이 추출되었습니다.")
             return state
 
-    # 헤더 기반 파싱 (폴백 또는 기본)
-    lines = markdown.split('\n')
+    # 3. 헤더 기반 파싱 (폴백)
+    lines = effective_markdown.split('\n')
     sections = []
-
     current_headers = {1: None, 2: None, 3: None, 4: None, 5: None, 6: None}
     current_content = []
     current_page = 1
-    in_toc = False
     
     def flush_section():
         nonlocal current_content
         if current_content:
             content = '\n'.join(current_content).strip()
             if content:
-                # 🔥 계층 경로 생성
                 header_path_parts = []
                 headers_dict = {}
                 for level in range(1, 7):
@@ -602,11 +724,9 @@ def node_split(state: PipelineState) -> PipelineState:
                         headers_dict[f"H{level}"] = current_headers[level]
                         header_path_parts.append(current_headers[level])
                 
-                # 🔥 Parent-Child 관계
                 parent = None
                 for level in range(6, 0, -1):
                     if current_headers[level]:
-                        # 현재 레벨보다 한 단계 위 찾기
                         for p_level in range(level - 1, 0, -1):
                             if current_headers[p_level]:
                                 parent = current_headers[p_level]
@@ -623,42 +743,24 @@ def node_split(state: PipelineState) -> PipelineState:
         current_content = []
     
     for line in lines:
-        # 🔥 페이지 마커 감지
         page_match = re.match(r'<!-- PAGE:(\d+) -->', line)
         if page_match:
             current_page = int(page_match.group(1))
             continue
         
-        # 🔥 목차 감지 및 스킵
-        if re.match(r'^#{1,2}\s+목차|^#{1,2}\s+Table of Contents', line, re.IGNORECASE):
-            in_toc = True
-            continue
-        
-        # 목차 종료 감지 (다음 주요 섹션 시작)
-        if in_toc:
-            if re.match(r'^##\s+\d+\s+목적|^##\s+1\s+', line):
-                in_toc = False
-            else:
-                continue  # 목차 내용 스킵
-        
-        # 헤더 감지
         header_match = re.match(r'^(#{1,6})\s+(.+)$', line)
-        
         if header_match:
             flush_section()
             level = len(header_match.group(1))
             header_text = header_match.group(2).strip()
-            
             current_headers[level] = header_text
             for l in range(level + 1, 7):
                 current_headers[l] = None
-            
             current_content.append(line)
         else:
             current_content.append(line)
     
     flush_section()
-    
     state["sections"] = sections
     return state
 

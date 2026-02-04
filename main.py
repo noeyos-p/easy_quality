@@ -1034,6 +1034,17 @@ def test_echo(request: SimpleRequest):
 
 def main():
     sql_store.init_db()
+    
+    # Weaviate 연결 확인
+    try:
+        wv_client = vector_store.get_client()
+        if wv_client.is_connected():
+            print("✅ Weaviate v4 연결 성공")
+        else:
+            print("❌ Weaviate v4 연결 실패")
+    except Exception as e:
+        print(f"❌ Weaviate v4 연결 체크 중 오류: {e}")
+
     print("🚀 RAG 시스템 시작")
     
     import uvicorn
@@ -1051,7 +1062,7 @@ def main():
     print("주요 기능:")
     print("  - LangGraph 문서 파이프라인")
     print("  - 🤖 ReAct 에이전트 (/agent/chat)")
-    print("  - ChromaDB + Neo4j + PostgreSQL")
+    print("  - Weaviate(v4) + Neo4j + PostgreSQL")
     print("  - LangSmith 추적 지원")
     print("=" * 60)
     
