@@ -60,6 +60,13 @@ def init_agent_tools(vector_store_module, graph_store_instance, sql_store_instan
     _vector_store = vector_store_module
     _graph_store = graph_store_instance
     _sql_store = sql_store_instance
+    
+    # 서브 에이전트 스토어 초기화 (그래프 스토어 추가)
+    try:
+        from backend.sub_agent.search import init_search_stores
+        init_search_stores(vector_store_module, sql_store_instance, graph_store_instance)
+    except ImportError:
+        pass
 
 def get_openai_client():
     global _openai_client
@@ -82,11 +89,11 @@ def get_zai_client():
 # ═══════════════════════════════════════════════════════════════════════════
 
 @tool
-def search_sop_tool(query: str, extract_english: bool = False, keywords: List[str] = None, target_sop_id: str = None) -> str:
+def search_sop_tool(query: str, extract_english: bool = False, keywords: List[str] = None, target_doc_id: str = None) -> str:
     """SOP 문서 검색 도구.
     Hybrid Search(BM25 + Vector) 방식을 사용하여 키워드와 의미론적 연관성을 동시에 고려합니다.
     extract_english: True면 영문 내용 위주로 추출
-    target_sop_id: 특정 문서 ID(예: EQ-SOP-00001)로 검색 범위를 한정할 때 사용
+    target_doc_id: 특정 문서 ID(예: EQ-SOP-00001)로 검색 범위를 한정할 때 사용
     """
     global _vector_store, _sql_store
     
@@ -111,11 +118,13 @@ def search_sop_tool(query: str, extract_english: bool = False, keywords: List[st
             
         for r in vec_res:
             meta = r.get('metadata', {})
-            sop_id = meta.get('sop_id') or meta.get('doc_name', 'Unknown')
-            section = meta.get('section') or meta.get('clause') or "본문"
+            doc_id = meta.get('doc_id') or meta.get('doc_id') or meta.get('doc_name', 'Unknown')
+            clause_id = meta.get('clause_id', '')
+            title = meta.get('title', '')
+            section = f"{clause_id} {title}" if clause_id and title else (meta.get('section') or meta.get('clause') or "본문")
             content = r.get('text', '')
             
-            if target_sop_id and sop_id.upper() != target_sop_id.upper():
+            if target_doc_id and doc_id.upper() != target_doc_id.upper():
                 continue
             
             if not content: continue
@@ -124,11 +133,11 @@ def search_sop_tool(query: str, extract_english: bool = False, keywords: List[st
             content_hash = hashlib.md5(content.encode()).hexdigest()
             if content_hash in seen_content: continue
             seen_content.add(content_hash)
+
+            display_header = f"[검색] {doc_id} > {section}"
             
-            display_header = f"📄 [검색] {sop_id} > {section}"
-            
-            # 요약용 정밀 검색(target_sop_id 지정) 시에는 글자 수 제한 대폭 완화
-            limit = 8000 if target_sop_id else 1500
+            # 요약용 정밀 검색(target_doc_id 지정) 시에는 글자 수 제한 대폭 완화
+            limit = 8000 if target_doc_id else 1500
             
             if extract_english:
                 # 영문 추출 로직: 알파벳 비율이 한글보다 높은 문단 필터링
@@ -158,58 +167,58 @@ def search_sop_tool(query: str, extract_english: bool = False, keywords: List[st
                 sop_doc = _sql_store.get_document_by_id(doc_id)
                 if sop_doc:
                     # 특정 문서 타겟팅 시에는 SQL에서도 더 많이 가져옴
-                    sql_limit = 10000 if target_sop_id else 2000
+                    sql_limit = 10000 if target_doc_id else 2000
                     full_content = sop_doc.get("content", "")
                     if full_content:
-                        results.append(f"📄 [문서 전체 가이드] {doc_name}:\n{full_content[:sql_limit]}...")
+                        results.append(f"[문서 전체 가이드] {doc_name}:\n{full_content[:sql_limit]}...")
                 
     return "\n\n".join(results) if results else "검색 결과 없음. 검색어나 키워드를 바꿔보세요."
 
 @tool
-def get_version_history_tool(sop_id: str) -> str:
+def get_version_history_tool(doc_id: str) -> str:
     """특정 문서의 버전 히스토리를 조회"""
     global _sql_store
     if not _sql_store: return "SQL 저장소 연결 실패"
     
-    versions = _sql_store.get_document_versions(sop_id)
-    if not versions: return f"{sop_id} 문서의 버전을 찾을 수 없습니다."
+    versions = _sql_store.get_document_versions(doc_id)
+    if not versions: return f"{doc_id} 문서의 버전을 찾을 수 없습니다."
     
     return "\n".join([f"- v{v['doc_metadata'].get('version')} ({v['created_at']})" for v in versions])
 
 @tool
-def compare_versions_tool(sop_id: str, v1: str, v2: str) -> str:
+def compare_versions_tool(doc_id: str, v1: str, v2: str) -> str:
     """두 버전의 문서 내용을 비교하여 반환"""
     global _sql_store
     if not _sql_store: return ""
     
-    doc1 = _sql_store.get_document_by_id(sop_id, v1)
-    doc2 = _sql_store.get_document_by_id(sop_id, v2)
+    doc1 = _sql_store.get_document_by_id(doc_id, v1)
+    doc2 = _sql_store.get_document_by_id(doc_id, v2)
     
     if not doc1 or not doc2: return "비교할 버전을 찾을 수 없습니다."
     
     return f"=== v{v1} ===\n{doc1.get('markdown_content')[:2000]}\n\n=== v{v2} ===\n{doc2.get('markdown_content')[:2000]}"
 
 @tool
-def get_references_tool(sop_id: str) -> str:
+def get_references_tool(doc_id: str) -> str:
     """참조 관계 조회"""
     global _graph_store
     if not _graph_store: return ""
-    refs = _graph_store.get_document_references(sop_id)
+    refs = _graph_store.get_document_references(doc_id)
     return str(refs)
 
 @tool
-def get_sop_headers_tool(sop_id: str) -> str:
+def get_sop_headers_tool(doc_id: str) -> str:
     """특정 문서의 실제 조항(Clause) 목록과 제목을 조회합니다.
     AI가 요약 계획을 세울 때 '짐작'하지 않고 실제 구조를 파악하기 위해 사용합니다.
     """
     global _sql_store
     if not _sql_store: return "SQL 저장소 연결 실패"
     
-    doc = _sql_store.get_document_by_name(sop_id)
-    if not doc: return f"'{sop_id}' 문서를 찾을 수 없습니다."
+    doc = _sql_store.get_document_by_name(doc_id)
+    if not doc: return f"'{doc_id}' 문서를 찾을 수 없습니다."
     
     chunks = _sql_store.get_chunks_by_document(doc['id'])
-    if not chunks: return f"'{sop_id}' 문서의 조항 정보를 찾을 수 없습니다."
+    if not chunks: return f"'{doc_id}' 문서의 조항 정보를 찾을 수 없습니다."
     
     # 조항 번호와 헤더 정보 추출
     headers = []
@@ -222,7 +231,7 @@ def get_sop_headers_tool(sop_id: str) -> str:
             headers.append(f"- {clause}: {section}")
             seen_clauses.add(clause)
             
-    return f"[{sop_id} 조항 목록]\n" + "\n".join(headers)
+    return f"[{doc_id} 조항 목록]\n" + "\n".join(headers)
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Agent State
@@ -256,9 +265,8 @@ def orchestrator_node(state: AgentState):
     [작업 흐름]
     1. **History 분석**: 이전 대화 내용(History)을 보고, 이미 수행된 에이전트의 보고가 있는지 확인하세요.
     2. **판단(Judgement)**: 
-       - 보고 내용이 충분하다면 -> 'finish'를 선택하여 최종 답변을 작성하세요.
+       - 보고 내용이 충분하다면 -> 'finish'를 선택하여 서브 에이전트의 답변을 그대로 확정하세요. (오케스트레이터가 직접 답변을 재작성하거나 요약하지 않습니다)
        - 보고 내용이 부족하거나 오류가 있다면 -> 다른 에이전트를 호출하거나, 검색 조건을 바꿔서 다시 시도하게 하세요.
-       - 아직 시작 단계라면 -> 적절한 에이전트를 호출하세요.
     
     [에이전트 목록 및 라우팅 가이드]
     1. retrieval: 규정 검색, 정보 조회. (어떤 문서가 있는지 모를 때 먼저 사용)
@@ -317,33 +325,8 @@ def orchestrator_node(state: AgentState):
         print(f"Orchestrator Error: {e}")
         return {"next_agent": "end", "final_answer": "오류가 발생했습니다."}
 
-def retrieval_agent_node(state: AgentState):
-    """[서브] 검색 에이전트 (Z.AI)"""
-    client = get_zai_client()
-    query = state["query"]
-    
-    # 한글/영문 요청 분석
-    is_english_req = "영문" in query or "영어" in query or "english" in query.lower()
-    
-    # 1. 도구 실행 (직접 호출)
-    # 실제로는 LLM이 도구 인자를 결정하게 할 수 있으나 여기선 규칙 기반으로 단순화
-    search_res = search_sop_tool.invoke({"query": query, "extract_english": is_english_req, "keywords": query.split()})
-    
-    # 2. 결과 정리 (Z.AI)
-    prompt = f"""다음 검색 결과를 바탕으로 사용자 질문에 답하세요.
-    질문: {query}
-    
-    [검색 결과]
-    {search_res}
-    
-    요약해서 핵심만 전달하세요."""
-    
-    res = client.chat.completions.create(
-        model=state.get("worker_model") or state.get("model_name") or "glm-4.7-flash", # 동적 모델 적용
-        messages=[{"role": "user", "content": prompt}]
-    )
-    
-    return {"messages": [{"role": "assistant", "content": f"[검색 에이전트 보고]\n{res.choices[0].message.content}"}]}
+
+# (Local retrieval_agent_node removed to use the deep-search version from sub_agent module)
 
 def comparison_agent_node(state: AgentState):
 
@@ -361,7 +344,7 @@ def comparison_agent_node(state: AgentState):
     )
     try:
         info = json.loads(res.choices[0].message.content)
-        comp_res = compare_versions_tool.invoke({"sop_id": info['id'], "v1": info['v1'], "v2": info['v2']})
+        comp_res = compare_versions_tool.invoke({"doc_id": info['id'], "v1": info['v1'], "v2": info['v2']})
         
         final_res = client.chat.completions.create(
             model=state.get("worker_model") or state.get("model_name") or "glm-4.7-flash", # 동적 모델 적용
@@ -382,12 +365,13 @@ def comparison_agent_node(state: AgentState):
 def create_workflow():
     from backend.sub_agent.summary import summary_agent_node
     from backend.sub_agent.graph import graph_agent_node
+    from backend.sub_agent.search import retrieval_agent_node as search_agent_node
     workflow = StateGraph(AgentState)
 
-    
+
     # Nodes
     workflow.add_node("orchestrator", orchestrator_node)
-    workflow.add_node("retrieval", retrieval_agent_node)
+    workflow.add_node("retrieval", search_agent_node)  # 딥 검색 에이전트 사용
     workflow.add_node("summary", summary_agent_node)
     workflow.add_node("comparison", comparison_agent_node)
     workflow.add_node("graph", graph_agent_node)

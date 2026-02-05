@@ -1,7 +1,7 @@
 # """
 # 문서 처리 파이프라인 v8.0
 
-# 🔥 새로운 4단계 파이프라인:
+#  새로운 4단계 파이프라인:
 # 1. 변환: PDF, DOCX, HTML → Markdown
 # 2. 분할: MarkdownHeaderTextSplitter로 헤더 기준 1차 분할
 # 3. 최적화: RecursiveCharacterTextSplitter로 긴 섹션 재분할
@@ -445,16 +445,16 @@
 #     """
 #     RecursiveCharacterTextSplitter 스타일 분할
     
-#     🔥 v8.1 개선:
+#      v8.1 개선:
 #     - 테이블 행 단위 분할 지원 ("\n| ")
 #     - 테이블 구조 보존
 #     - 테이블 내부에서는 overlap 비활성화
 #     """
 #     if separators is None:
-#         # 🔥 테이블 행 구분자 추가 (표 한복판 분할 방지)
+#         #  테이블 행 구분자 추가 (표 한복판 분할 방지)
 #         separators = [
 #             "\n\n",      # 문단 구분
-#             "\n| ",      # 🔥 마크다운 테이블 행 (표 보존)
+#             "\n| ",      #  마크다운 테이블 행 (표 보존)
 #             "\n",        # 줄바꿈
 #             ". ",        # 문장
 #             "。",        # 한국어/일본어 문장
@@ -465,7 +465,7 @@
 #     if len(text) <= chunk_size:
 #         return [text]
     
-#     # 🔥 테이블인지 확인 (테이블이면 overlap 비활성화)
+#     #  테이블인지 확인 (테이블이면 overlap 비활성화)
 #     is_table = text.strip().startswith('|') or '\n|' in text
 #     effective_overlap = 0 if is_table else chunk_overlap
     
@@ -534,12 +534,12 @@
 #     metadata: Dict,
 #     chunk_size: int = 500,
 #     chunk_overlap: int = 50,
-#     add_context_prefix: bool = True  # 🔥 컨텍스트 프리픽스 추가 옵션
+#     add_context_prefix: bool = True  #  컨텍스트 프리픽스 추가 옵션
 # ) -> List[Chunk]:
 #     """
 #     섹션을 청크로 변환하고 메타데이터 추가
     
-#     🔥 v8.1 개선:
+#      v8.1 개선:
 #     - add_context_prefix: 재분할된 청크에 헤더 경로를 텍스트로 삽입
 #       → 검색 성능 향상, 환각 감소
 #     """
@@ -566,7 +566,7 @@
 #             if not text.strip():
 #                 continue
             
-#             # 🔥 재분할된 청크(2번째부터)에 컨텍스트 프리픽스 추가
+#             #  재분할된 청크(2번째부터)에 컨텍스트 프리픽스 추가
 #             if add_context_prefix and is_split and i > 0 and header_path:
 #                 context_prefix = f"[Context: {header_path}]\n\n"
 #                 text = context_prefix + text
@@ -610,7 +610,7 @@
 #                     "H2": headers.get("H2"),
 #                     "H3": headers.get("H3"),
 #                     "H4": headers.get("H4"),
-#                     "chunk_part": i + 1 if is_split else None,  # 🔥 분할된 청크 번호
+#                     "chunk_part": i + 1 if is_split else None,  #  분할된 청크 번호
 #                     "total_parts": len(text_chunks) if is_split else None,
 #                 }
 #             ))
@@ -730,5 +730,5 @@
 #     )
     
 #     print(f"\n{'='*60}")
-#     print(f"✅ 최종 결과")
+#     print(f" 최종 결과")
 #     print(f"   총 청크: {len(result.chunks)}")

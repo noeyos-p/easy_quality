@@ -31,9 +31,9 @@ class SQLStore:
         # 연결 정보 출력
         host = self.config.get("host", "localhost")
         if host in ["localhost", "127.0.0.1"]:
-            print(f"🏠 [SQLStore] PostgreSQL: 로컬호스트 연결 중 ({host})")
+            print(f"[SQLStore] PostgreSQL: 로컬호스트 연결 중 ({host})")
         else:
-            print(f"🌐 [SQLStore] PostgreSQL: 원격 DB 연결 중 ({host})")
+            print(f"[SQLStore] PostgreSQL: 원격 DB 연결 중 ({host})")
             
         # sop_id의 UNIQUE 제약조건을 제거하고 (sop_id, version) 복합 유니크를 권장하지만,
         query = """
@@ -90,15 +90,23 @@ class SQLStore:
         CREATE INDEX IF NOT EXISTS idx_chunk_metadata ON chunk USING GIN (metadata);
         CREATE INDEX IF NOT EXISTS idx_memory_users_id ON memory(users_id);
         CREATE INDEX IF NOT EXISTS idx_document_doc_name_id ON document(doc_name_id);
+
+        -- [하위 호환성] doc_name 컬럼이 존재할 경우 NOT NULL 제약조건 제거
+        DO $$ 
+        BEGIN 
+            IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='document' AND column_name='doc_name') THEN
+                ALTER TABLE document ALTER COLUMN doc_name DROP NOT NULL;
+            END IF;
+        END $$;
         """
         try:
             with self._get_connection() as conn:
                 with conn.cursor() as cur:
                     cur.execute(query)
                     conn.commit()
-            print("✅ [SQLStore] PostgreSQL 테이블이 준비되었습니다 (document, chunk, users, memory).")
+            print(" [SQLStore] PostgreSQL 테이블이 준비되었습니다 (document, chunk, users, memory).")
         except Exception as e:
-            print(f"❌ [SQLStore] DB 초기화 실패: {e}")
+            print(f"🔴 [SQLStore] DB 초기화 실패: {e}")
 
     # ═══════════════════════════════════════════════════════════════════════════
     # doc_name 테이블 관련 메서드
@@ -120,7 +128,7 @@ class SQLStore:
                     conn.commit()
                     return doc_name_id
         except Exception as e:
-            print(f"❌ [SQLStore] 문서명 처리 실패: {e}")
+            print(f"🔴 [SQLStore] 문서명 처리 실패: {e}")
             return None
 
     def list_doc_names(self) -> List[Dict]:
@@ -172,10 +180,10 @@ class SQLStore:
                     ))
                     doc_id = cur.fetchone()[0]
                     conn.commit()
-            print(f"✅ [SQLStore] 문서 저장 성공: {doc_name} v{version} [{status}] (ID: {doc_id})")
+            print(f" [SQLStore] 문서 저장 성공: {doc_name} v{version} [{status}] (ID: {doc_id})")
             return doc_id
         except Exception as e:
-            print(f"❌ [SQLStore] 문서 저장 실패: {e}")
+            print(f" [SQLStore] 문서 저장 실패: {e}")
             return None
 
     def save_chunk(
@@ -205,7 +213,7 @@ class SQLStore:
                     conn.commit()
             return chunk_id
         except Exception as e:
-            print(f"❌ [SQLStore] 청크 저장 실패: {e}")
+            print(f" [SQLStore] 청크 저장 실패: {e}")
             return None
 
     def save_chunks_batch(
@@ -230,9 +238,9 @@ class SQLStore:
                             document_id
                         ))
                     conn.commit()
-            print(f"✅ [SQLStore] {len(chunks)}개 청크 저장 성공 (document_id: {document_id})")
+            print(f" [SQLStore] {len(chunks)}개 청크 저장 성공 (document_id: {document_id})")
         except Exception as e:
-            print(f"❌ [SQLStore] 청크 일괄 저장 실패: {e}")
+            print(f" [SQLStore] 청크 일괄 저장 실패: {e}")
 
     def get_document_by_id(self, document_id: int) -> Optional[Dict]:
         """문서 ID로 문서 조회"""
@@ -301,7 +309,7 @@ class SQLStore:
                     cur.execute(query)
                     return cur.fetchall()
         except Exception as e:
-            print(f"❌ [SQLStore] 목록 조회 실패: {e}")
+            print(f" [SQLStore] 목록 조회 실패: {e}")
             return []
 
     def update_document_status(
@@ -327,10 +335,10 @@ class SQLStore:
                 with conn.cursor() as cur:
                     cur.execute(query, (status, approved_at, effective_at, deprecated_at, document_id))
                     conn.commit()
-            print(f"✅ [SQLStore] 문서 상태 변경: ID {document_id} → {status}")
+            print(f" [SQLStore] 문서 상태 변경: ID {document_id} → {status}")
             return True
         except Exception as e:
-            print(f"❌ [SQLStore] 문서 상태 변경 실패: {e}")
+            print(f" [SQLStore] 문서 상태 변경 실패: {e}")
             return False
 
     # Users 테이블 관련 메서드
@@ -345,7 +353,7 @@ class SQLStore:
                     conn.commit()
             return user_id
         except Exception as e:
-            print(f"❌ [SQLStore] 사용자 저장 실패: {e}")
+            print(f" [SQLStore] 사용자 저장 실패: {e}")
             return None
 
     def get_user(self, user_id: int) -> Optional[Dict]:
@@ -371,7 +379,7 @@ class SQLStore:
                     conn.commit()
             return memory_id
         except Exception as e:
-            print(f"❌ [SQLStore] 대화 기록 저장 실패: {e}")
+            print(f" [SQLStore] 대화 기록 저장 실패: {e}")
             return None
 
     def get_memory_by_user(self, users_id: int, limit: int = 10) -> List[Dict]:
@@ -402,7 +410,7 @@ class SQLStore:
         - document 테이블에 새 컬럼 추가 (modified_at, approved_at, effective_at, deprecated_at, status)
         - document.doc_name → doc_name 테이블로 이관 및 FK 연결
         """
-        print("🔄 [SQLStore] 마이그레이션 v2 시작...")
+        print("[SQLStore] 마이그레이션 v2 시작...")
 
         migration_queries = [
             # 1. doc_name 테이블 생성
@@ -437,7 +445,10 @@ class SQLStore:
             WHERE d.doc_name = dn.name AND d.doc_name_id IS NULL;
             """,
 
-            # 5. 인덱스 생성
+            # 5. doc_name 컬럼의 NOT NULL 제약조건 제거
+            "ALTER TABLE document ALTER COLUMN doc_name DROP NOT NULL;",
+
+            # 6. 인덱스 생성
             "CREATE INDEX IF NOT EXISTS idx_document_doc_name_id ON document(doc_name_id);",
         ]
 
@@ -447,20 +458,20 @@ class SQLStore:
                     for i, query in enumerate(migration_queries, 1):
                         try:
                             cur.execute(query)
-                            print(f"   ✅ 단계 {i} 완료")
+                            print(f"    단계 {i} 완료")
                         except Exception as e:
                             # 이미 존재하는 컬럼 등 무시
                             if "already exists" in str(e) or "does not exist" in str(e):
                                 print(f"   ⏩ 단계 {i} 스킵 (이미 적용됨)")
                             else:
-                                print(f"   ⚠️ 단계 {i} 경고: {e}")
+                                print(f"    단계 {i} 경고: {e}")
                     conn.commit()
 
-            print("✅ [SQLStore] 마이그레이션 v2 완료!")
+            print(" [SQLStore] 마이그레이션 v2 완료!")
             return True
 
         except Exception as e:
-            print(f"❌ [SQLStore] 마이그레이션 실패: {e}")
+            print(f" [SQLStore] 마이그레이션 실패: {e}")
             return False
 
     def check_migration_status(self) -> Dict:
@@ -496,7 +507,7 @@ class SQLStore:
 
             return status
         except Exception as e:
-            print(f"❌ 상태 확인 실패: {e}")
+            print(f" 상태 확인 실패: {e}")
             return status
 
 
@@ -505,19 +516,19 @@ if __name__ == "__main__":
     store = SQLStore()
 
     # 마이그레이션 상태 확인
-    print("\n📊 현재 스키마 상태:")
+    print("\n 현재 스키마 상태:")
     status = store.check_migration_status()
     for key, value in status.items():
-        print(f"   {key}: {'✅' if value else '❌'}")
+        print(f"   {key}: {'' if value else ''}")
 
     # 마이그레이션 필요 시 실행
     if not all(status.values()):
-        print("\n⚠️ 마이그레이션이 필요합니다.")
+        print("\n 마이그레이션이 필요합니다.")
         user_input = input("마이그레이션을 실행하시겠습니까? (y/n): ")
         if user_input.lower() == 'y':
             store.migrate_v2()
     else:
-        print("\n✅ 스키마가 최신 상태입니다.")
+        print("\n 스키마가 최신 상태입니다.")
 
     store.init_db()
 

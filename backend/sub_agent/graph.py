@@ -9,7 +9,7 @@ from backend.agent import get_zai_client, get_references_tool, AgentState
 # 시각화 지원: 관계를 한눈에 볼 수 있도록 Mermaid 다이어그램을 생성합니다.
 # 전문 보고서 형식: 참조 관계의 의미와 변경 시 주의사항을 포함한 상세 보고서를 제공합니다.
 # 이제 에이전트에게 "SOP-xxx 변경 시 영향 알려줘"와 같이 질문하면 더욱 풍부한 답변을 받을 수 있습니다.
-def generate_mermaid_flow(sop_id: str, refs: dict) -> str:
+def generate_mermaid_flow(doc_id: str, refs: dict) -> str:
     """Mermaid 다이어그램 코드 생성"""
     lines = ["graph LR"]
     
@@ -17,8 +17,8 @@ def generate_mermaid_flow(sop_id: str, refs: dict) -> str:
     title = doc.get("title", "Unknown")
     
     # 메인 노드 스타일
-    safe_sop_id = sop_id.replace("-", "_")
-    lines.append(f'    Main["{sop_id}<br/>({title})"]:::mainNode')
+    safe_doc_id = doc_id.replace("-", "_")
+    lines.append(f'    Main["{doc_id}<br/>({title})"]:::mainNode')
     
     # 참조하는 문서들 (Out-degree)
     for ref in refs.get("references", []):
@@ -52,7 +52,7 @@ def graph_agent_node(state: AgentState):
     - general_info: 단순히 특정 문서의 참조 목록을 보고 싶어할 때
     
     반드시 JSON 형식으로만 답변하세요.
-    예: {{"sop_id": "EQ-SOP-001", "intent": "impact_analysis", "reason": "이전 대화에서 찾은 SOP-001의 영향 분석"}}"""
+    예: {{"doc_id": "EQ-SOP-001", "intent": "impact_analysis", "reason": "이전 대화에서 찾은 SOP-001의 영향 분석"}}"""
     
     try:
         extraction_res = client.chat.completions.create(
@@ -61,35 +61,35 @@ def graph_agent_node(state: AgentState):
             response_format={"type": "json_object"}
         )
         info = json.loads(extraction_res.choices[0].message.content)
-        sop_id = info.get("sop_id")
+        doc_id = info.get("doc_id")
         intent = info.get("intent", "general_info")
     except:
         # 추출 실패 시 정규식 보조
         match = re.search(r'([A-Z]{2}-SOP-\d+)', query.upper())
-        sop_id = match.group(1) if match else None
+        doc_id = match.group(1) if match else None
         intent = "general_info"
     
-    if not sop_id:
+    if not doc_id:
         # SOP-로 시작하지 않는 문서명인 경우 다시 한번 시도
         match = re.search(r'([A-Za-z0-9_-]+SOP[A-Za-z0-9_-]+)', query.upper())
-        sop_id = match.group(1) if match else None
+        doc_id = match.group(1) if match else None
         
-    if not sop_id:
+    if not doc_id:
         return {"messages": [{"role": "assistant", "content": "[그래프 에이전트] 분석할 문서 ID를 찾지 못했습니다. (예: SOP-001 관계 분석해줘)"}]}
 
     # 2. 데이터 조회 (Tool 활용)
-    refs_str = get_references_tool.invoke({"sop_id": sop_id})
+    refs_str = get_references_tool.invoke({"doc_id": doc_id})
     
     if not refs_str or refs_str == "None":
-        return {"messages": [{"role": "assistant", "content": f"[그래프 에이전트] {sop_id}에 대한 참조 데이터가 존재하지 않습니다."}]}
+        return {"messages": [{"role": "assistant", "content": f"[그래프 에이전트] {doc_id}에 대한 참조 데이터가 존재하지 않습니다."}]}
 
     try:
         ref_data = ast.literal_eval(refs_str)
     except:
-        ref_data = {"document": {"sop_id": sop_id}, "references": [], "cited_by": []}
+        ref_data = {"document": {"doc_id": doc_id}, "references": [], "cited_by": []}
 
     # 3. 시각화 (Mermaid) 생성
-    mermaid_code = generate_mermaid_flow(sop_id, ref_data)
+    mermaid_code = generate_mermaid_flow(doc_id, ref_data)
     
     # 4. 심층 분석 (Z.AI)
     analysis_prompt = f"""다음 그래프 데이터를 바탕으로 질문에 대해 전문적인 분석 보고서를 작성하세요.
@@ -110,11 +110,11 @@ def graph_agent_node(state: AgentState):
         messages=[{"role": "user", "content": analysis_prompt}]
     )
     
-    final_report = f"""### 📊 {sop_id} 관계망 분석 보고서
+    final_report = f"""###  {doc_id} 관계망 분석 보고서
 
 {analysis_res.choices[0].message.content}
 
-#### 🔗 시각화 관계도 (Mermaid)
+####  시각화 관계도 (Mermaid)
 ```mermaid
 {mermaid_code}
 ```
