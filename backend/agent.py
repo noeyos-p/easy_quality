@@ -341,7 +341,7 @@ def graph_agent_node(state: AgentState):
 # ═══════════════════════════════════════════════════════════════════════════
 
 def create_workflow():
-    from sub_agent.summary import summary_agent_node
+    from backend.sub_agent.summary import summary_agent_node
     workflow = StateGraph(AgentState)
 
     
