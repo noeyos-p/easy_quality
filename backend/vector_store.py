@@ -96,52 +96,58 @@ def get_device() -> str:
 
 
 def get_client() -> weaviate.WeaviateClient:
-    """Weaviate v4 persistent client - 로컬 우선, Cloudflare 폴백"""
+    """Weaviate v4 persistent client - ngrok 우선 (원격 팀원 지원)"""
     global _client
     if _client is None:
-        # Cloudflare 터널 URL (gRPC 미지원 - 검색 불가)
-        CLOUDFLARE_HOST = "five-envelope-barbie-shoes.trycloudflare.com"
+        # ngrok 터널 URL
+        NGROK_HTTP_HOST = "angelique-nonpulmonary-britni.ngrok-free.dev"
+        NGROK_GRPC_HOST = "0.tcp.jp.ngrok.io"
+        NGROK_GRPC_PORT = 15979
 
-        # 1. 먼저 로컬 연결 시도 (gRPC 지원, 검색 가능)
+        # 1. ngrok 터널 먼저 시도 (원격 접속 가능)
         try:
-            _client = weaviate.connect_to_local(
-                host=WEAVIATE_HOST,
-                port=WEAVIATE_PORT,
-                grpc_port=50051,
-                additional_config=wvc.init.AdditionalConfig(
-                    timeout=wvc.init.Timeout(init=10, query=60, insert=120)
-                )
+            from weaviate import WeaviateClient
+            from weaviate.connect import ConnectionParams
+
+            connection_params = ConnectionParams.from_params(
+                http_host=NGROK_HTTP_HOST,
+                http_port=443,
+                http_secure=True,
+                grpc_host=NGROK_GRPC_HOST,
+                grpc_port=NGROK_GRPC_PORT,
+                grpc_secure=False  # TCP 터널은 TLS 없음
             )
-            _client.collections.list_all()  # 연결 테스트
-            print(f"✅ Weaviate v4 로컬 연결 ({WEAVIATE_HOST}:{WEAVIATE_PORT}) - gRPC 지원")
+
+            _client = WeaviateClient(
+                connection_params=connection_params,
+                skip_init_checks=True,
+                additional_config=wvc.init.AdditionalConfig(
+                    timeout=wvc.init.Timeout(init=30, query=60, insert=120)
+                ),
+                # ngrok "Visit Site" 인터스티셜 우회 헤더
+                additional_headers={
+                    "ngrok-skip-browser-warning": "true"
+                }
+            )
+            _client.connect()
+            _client.collections.list_all()
+            print(f"✅ Weaviate v4 연결 (ngrok - HTTP: {NGROK_HTTP_HOST}, gRPC: {NGROK_GRPC_HOST}:{NGROK_GRPC_PORT})")
         except Exception as e:
-            print(f"⚠️ 로컬 연결 실패: {e}")
-            print(f"   Cloudflare 터널 시도 중... (gRPC 미지원 - 일부 기능 제한)")
+            print(f"⚠️ ngrok 연결 실패: {e}")
+            print(f"   로컬 연결 시도 중...")
 
-            # 2. Cloudflare 터널 폴백 (gRPC 미지원)
+            # 2. 로컬 폴백 (같은 네트워크인 경우)
             try:
-                from weaviate import WeaviateClient
-                from weaviate.connect import ConnectionParams
-
-                connection_params = ConnectionParams.from_params(
-                    http_host=CLOUDFLARE_HOST,
-                    http_port=443,
-                    http_secure=True,
-                    grpc_host=WEAVIATE_HOST,  # 로컬 gRPC 주소로 설정
+                _client = weaviate.connect_to_local(
+                    host=WEAVIATE_HOST,
+                    port=WEAVIATE_PORT,
                     grpc_port=50051,
-                    grpc_secure=False
-                )
-
-                _client = WeaviateClient(
-                    connection_params=connection_params,
-                    skip_init_checks=True,
                     additional_config=wvc.init.AdditionalConfig(
-                        timeout=wvc.init.Timeout(init=30, query=60, insert=120)
+                        timeout=wvc.init.Timeout(init=5, query=60, insert=120)
                     )
                 )
-                _client.connect()
                 _client.collections.list_all()
-                print(f"✅ Weaviate v4 연결 (HTTP: Cloudflare, gRPC: {WEAVIATE_HOST})")
+                print(f"✅ Weaviate v4 로컬 연결 ({WEAVIATE_HOST}:{WEAVIATE_PORT})")
             except Exception as e2:
                 print(f"❌ 모든 연결 실패: {e2}")
                 raise
