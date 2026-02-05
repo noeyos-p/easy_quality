@@ -224,14 +224,25 @@ def orchestrator_node(state: AgentState):
        - 보고 내용이 부족하거나 오류가 있다면 -> 다른 에이전트를 호출하거나, 검색 조건을 바꿔서 다시 시도하게 하세요.
        - 아직 시작 단계라면 -> 적절한 에이전트를 호출하세요.
     
-    [에이전트 목록]
-    1. retrieval: 규정 검색, 정보 조회 (SQL:키워드/ID우선 -> Vector:의미검색)
-    2. summary: 문서나 조항의 요약 (전체 핵심 요약 또는 구조적/조항별 요약 제공)
-    3. comparison: 구버전/신버전 비교 (SQL 버전 히스토리)
-    4. graph: 참조/인용 관계 확인 (Graph DB)
+    [에이전트 목록 및 라우팅 가이드]
+    1. retrieval: 규정 검색, 정보 조회. (어떤 문서가 있는지 모를 때 먼저 사용)
+    2. summary: 문서나 조항의 요약. (이미 찾은 문서의 내용을 요약할 때 사용)
+    3. comparison: 두 문서의 버전 차이 비교.
+    4. graph: **참조/인용 관계(Reference), 상위/하위 규정 관계 확인**. "참조 목록 알려줘", "어떤 규정을 따르나?", "영향 분석해줘" 등의 질문은 반드시 이 에이전트가 처리해야 합니다.
+    
+    [라우팅 규칙]
+    - 사용자가 "참조 목록", "Reference", "연결된 문서" 등을 물어보면 **무조건 `graph`**를 호출하세요. `retrieval`로 본문에서 찾으려 하지 마세요.
+    - 이전 대화에서 이미 특정 문서(SOP ID)가 식별되었다면, 그 ID를 바탕으로 전문 에이전트(summary, graph)를 즉시 호출하세요.
+    - 만약 서브 에이전트가 "문서 ID를 찾지 못했다"고 보고한다면, `retrieval`을 통해 먼저 문서 ID를 찾은 후 다시 해당 에이전트를 부르세요.
     
     [출력 형식]
     JSON 형식으로 'next_action' (agent 이름 또는 'finish')과 'reason'을 반환하세요.
+    - **중요(Termination)**: 서브 에이전트의 보고 내용에 이미 답변에 필요한 충분한 정보(예: 검색된 문단, 시각화 보고서, 요약 등)가 있다면 즉시 'finish'를 선택하세요.
+    - **루프 방지(Loop Prevention)**: 
+        1. 동일한 서브 에이전트({next_action})를 같은 목적({reason})으로 3회 이상 반복 호출하지 마세요. 
+        2. 만약 `retrieval` 에이전트가 "검색 결과 없음"을 보고했다면, 똑같은 검색어로는 다시 호출하지 마세요. 검색어를 바꾸거나 실패를 인정하고 'finish'하세요.
+        3. 이미 답변할 근거가 생겼음에도 불구하고 서브 에이전트를 계속 부르는 것은 금지됩니다.
+    
     예: {"next_action": "retrieval", "reason": "규정 검색 결과가 부족하여 재검색 필요"}
     """
     
@@ -320,21 +331,7 @@ def comparison_agent_node(state: AgentState):
 
     return {"messages": [{"role": "assistant", "content": f"[비교 에이전트 보고]\n{content}"}]}
 
-def graph_agent_node(state: AgentState):
-    """[서브] 그래프 에이전트 (Z.AI)"""
-    client = get_zai_client()
-    query = state["query"]
-    
-    # SOP ID 추출
-    match = re.search(r'([A-Z]{2}-SOP-\d+)', query.upper())
-    if match:
-        sop_id = match.group(1)
-        refs = get_references_tool.invoke({"sop_id": sop_id})
-        content = f"문서 {sop_id}의 참조 관계입니다:\n{refs}"
-    else:
-        content = "문서 ID를 찾을 수 없습니다."
-        
-    return {"messages": [{"role": "assistant", "content": f"[그래프 에이전트 보고]\n{content}"}]}
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 워크플로우 구성
@@ -342,6 +339,7 @@ def graph_agent_node(state: AgentState):
 
 def create_workflow():
     from backend.sub_agent.summary import summary_agent_node
+    from backend.sub_agent.graph import graph_agent_node
     workflow = StateGraph(AgentState)
 
     
@@ -399,8 +397,10 @@ def run_agent(query: str, session_id: str = "default", model_name: str = None, e
         "model_name": model_name # 하위 호환성 유지
     }
     
-    # LangGraph 실행 (무한 루프 방지를 위해 recursion_limit 설정)
-    result = _app.invoke(initial_state, config={"recursion_limit": 5})
+
+    # LangGraph 실행 (무한 루프 방지를 위해 recursion_limit 설정 - 복합 질문 처리를 위해 20으로 상향)
+    result = _app.invoke(initial_state, config={"recursion_limit": 20})
+
     
     return {
         "answer": result.get("final_answer", "답변을 생성하지 못했습니다."),
