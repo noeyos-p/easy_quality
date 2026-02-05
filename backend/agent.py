@@ -235,6 +235,10 @@ def orchestrator_node(state: AgentState):
     - 이전 대화에서 이미 특정 문서(SOP ID)가 식별되었다면, 그 ID를 바탕으로 전문 에이전트(summary, graph)를 즉시 호출하세요.
     - 만약 서브 에이전트가 "문서 ID를 찾지 못했다"고 보고한다면, `retrieval`을 통해 먼저 문서 ID를 찾은 후 다시 해당 에이전트를 부르세요.
     
+    [중요 종료 조건]
+    - 서브 에이전트(특히 summary)가 답변 마지막에 `[DONE]`을 포함했거나, 답변 내용이 질문에 충분히 대답하고 있다면 **절대 다시 질문하거나 요약하지 말고 즉시 `finish`를 선택**하세요.
+    - 이미 보고된 내용을 다듬기 위해 다른 에이전트를 호출하지 마세요.
+    
     [출력 형식]
     JSON 형식으로 'next_action' (agent 이름 또는 'finish')과 'reason'을 반환하세요.
     - **중요(Termination)**: 서브 에이전트의 보고 내용에 이미 답변에 필요한 충분한 정보(예: 검색된 문단, 시각화 보고서, 요약 등)가 있다면 즉시 'finish'를 선택하세요.
@@ -262,12 +266,14 @@ def orchestrator_node(state: AgentState):
         
         # 만약 finish라면 최종 답변 생성
         if next_action == "finish":
-            # 한 번 더 호출하여 자연어 답변 생성
-            final_res = client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[{"role": "system", "content": "수집된 정보를 바탕으로 사용자에게 친절하게 최종 답변을 하세요. 한국어로 답변해."}] + messages
-            )
-            return {"next_agent": "end", "final_answer": final_res.choices[0].message.content}
+            # 마지막 서브 에이전트의 보고를 그대로 사용하거나, 히스토리에서 답변 추출
+            last_message = messages[-1]["content"] if messages else "답변을 준비하지 못했습니다."
+            
+            # [DONE] 태그 제거나 깔끔한 마무리 (필요 시)
+            clean_answer = last_message.replace("[DONE]", "").strip()
+            # 만약 보고 형식([검색 에이전트 보고] 등)이 있다면 그대로 노출하거나 정리 가능
+            
+            return {"next_agent": "end", "final_answer": clean_answer}
             
         return {"next_agent": next_action}
         
@@ -397,7 +403,6 @@ def run_agent(query: str, session_id: str = "default", model_name: str = None, e
         "model_name": model_name # 하위 호환성 유지
     }
     
-
     # LangGraph 실행 (무한 루프 방지를 위해 recursion_limit 설정 - 복합 질문 처리를 위해 20으로 상향)
     result = _app.invoke(initial_state, config={"recursion_limit": 20})
 

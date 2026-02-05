@@ -45,14 +45,25 @@ class SQLStore:
             dept TEXT
         );
 
+        -- doc_name 테이블 (문서명 마스터)
+        CREATE TABLE IF NOT EXISTS doc_name (
+            id SERIAL PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE     -- 문서명 (ex: EQ-SOP-00001)
+        );
+
         -- document 테이블
         CREATE TABLE IF NOT EXISTS document (
             id SERIAL PRIMARY KEY,
-            doc_name TEXT NOT NULL,
+            doc_name_id INTEGER REFERENCES doc_name(id) ON DELETE RESTRICT,  -- FK: 문서명
             content TEXT,                 -- 원본 전체 마크다운 또는 텍스트
             doc_type TEXT,                -- 문서 타입 (.pdf, .docx 등)
             version TEXT DEFAULT '1.0',   -- 문서 버전
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            modified_at TIMESTAMP,        -- 문서수정일자
+            approved_at TIMESTAMP,        -- 승인일자
+            effective_at TIMESTAMP,       -- 발효일자
+            deprecated_at TIMESTAMP,      -- 폐기일자
+            status TEXT DEFAULT '사용중' CHECK (status IN ('폐기', '사용중', '승인대기중'))  -- 문서상태
         );
 
         -- chunk 테이블
@@ -78,7 +89,7 @@ class SQLStore:
         CREATE INDEX IF NOT EXISTS idx_chunk_clause ON chunk(clause);
         CREATE INDEX IF NOT EXISTS idx_chunk_metadata ON chunk USING GIN (metadata);
         CREATE INDEX IF NOT EXISTS idx_memory_users_id ON memory(users_id);
-        CREATE INDEX IF NOT EXISTS idx_document_doc_name ON document(doc_name);
+        CREATE INDEX IF NOT EXISTS idx_document_doc_name_id ON document(doc_name_id);
         """
         try:
             with self._get_connection() as conn:
@@ -89,27 +100,79 @@ class SQLStore:
         except Exception as e:
             print(f"❌ [SQLStore] DB 초기화 실패: {e}")
 
+    # ═══════════════════════════════════════════════════════════════════════════
+    # doc_name 테이블 관련 메서드
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    def get_or_create_doc_name(self, name: str) -> Optional[int]:
+        """문서명 조회 또는 생성 (없으면 생성)"""
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    # 먼저 조회
+                    cur.execute("SELECT id FROM doc_name WHERE name = %s", (name,))
+                    row = cur.fetchone()
+                    if row:
+                        return row[0]
+                    # 없으면 생성
+                    cur.execute("INSERT INTO doc_name (name) VALUES (%s) RETURNING id", (name,))
+                    doc_name_id = cur.fetchone()[0]
+                    conn.commit()
+                    return doc_name_id
+        except Exception as e:
+            print(f"❌ [SQLStore] 문서명 처리 실패: {e}")
+            return None
+
+    def list_doc_names(self) -> List[Dict]:
+        """모든 문서명 목록 조회"""
+        query = "SELECT id, name FROM doc_name ORDER BY name"
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    cur.execute(query)
+                    return cur.fetchall()
+        except Exception:
+            return []
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # document 테이블 관련 메서드
+    # ═══════════════════════════════════════════════════════════════════════════
+
     def save_document(
         self,
         doc_name: str,
         content: str,
         doc_type: str = None,
-        version: str = "1.0"
+        version: str = "1.0",
+        status: str = "사용중",
+        modified_at: str = None,
+        approved_at: str = None,
+        effective_at: str = None,
+        deprecated_at: str = None
     ) -> Optional[int]:
-        """문서 정보를 저장합니다."""
+        """문서 정보를 저장합니다. (doc_name은 자동으로 doc_name 테이블에 등록)"""
+        # 1. doc_name_id 조회 또는 생성
+        doc_name_id = self.get_or_create_doc_name(doc_name)
+        if not doc_name_id:
+            return None
+
+        # 2. document 저장
         insert_query = """
-            INSERT INTO document (doc_name, content, doc_type, version)
-            VALUES (%s, %s, %s, %s)
+            INSERT INTO document (doc_name_id, content, doc_type, version, status, modified_at, approved_at, effective_at, deprecated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id;
         """
 
         try:
             with self._get_connection() as conn:
                 with conn.cursor() as cur:
-                    cur.execute(insert_query, (doc_name, content, doc_type, version))
+                    cur.execute(insert_query, (
+                        doc_name_id, content, doc_type, version, status,
+                        modified_at, approved_at, effective_at, deprecated_at
+                    ))
                     doc_id = cur.fetchone()[0]
                     conn.commit()
-            print(f"✅ [SQLStore] 문서 저장 성공: {doc_name} v{version} (ID: {doc_id})")
+            print(f"✅ [SQLStore] 문서 저장 성공: {doc_name} v{version} [{status}] (ID: {doc_id})")
             return doc_id
         except Exception as e:
             print(f"❌ [SQLStore] 문서 저장 실패: {e}")
@@ -173,7 +236,13 @@ class SQLStore:
 
     def get_document_by_id(self, document_id: int) -> Optional[Dict]:
         """문서 ID로 문서 조회"""
-        query = "SELECT id, doc_name, content, doc_type, version, created_at FROM document WHERE id = %s"
+        query = """
+            SELECT d.id, dn.name as doc_name, d.content, d.doc_type, d.version, d.created_at,
+                   d.modified_at, d.approved_at, d.effective_at, d.deprecated_at, d.status
+            FROM document d
+            JOIN doc_name dn ON d.doc_name_id = dn.id
+            WHERE d.id = %s
+        """
         try:
             with self._get_connection() as conn:
                 with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -184,12 +253,18 @@ class SQLStore:
 
     def get_document_by_name(self, doc_name: str, version: str = None) -> Optional[Dict]:
         """문서명으로 문서 조회 (버전 미지정 시 최신 버전)"""
+        base_query = """
+            SELECT d.id, dn.name as doc_name, d.content, d.doc_type, d.version, d.created_at,
+                   d.modified_at, d.approved_at, d.effective_at, d.deprecated_at, d.status
+            FROM document d
+            JOIN doc_name dn ON d.doc_name_id = dn.id
+            WHERE dn.name = %s
+        """
         if version:
-            query = "SELECT id, doc_name, content, doc_type, version, created_at FROM document WHERE doc_name = %s AND version = %s"
+            query = base_query + " AND d.version = %s"
             params = (doc_name, version)
         else:
-            # 최신 버전 (created_at 기준 내림차순)
-            query = "SELECT id, doc_name, content, doc_type, version, created_at FROM document WHERE doc_name = %s ORDER BY created_at DESC LIMIT 1"
+            query = base_query + " ORDER BY d.created_at DESC LIMIT 1"
             params = (doc_name,)
 
         try:
@@ -213,7 +288,13 @@ class SQLStore:
 
     def list_documents(self) -> List[Dict]:
         """모든 문서 목록 조회"""
-        query = "SELECT id, doc_name, doc_type, version, created_at FROM document ORDER BY created_at DESC"
+        query = """
+            SELECT d.id, dn.name as doc_name, d.doc_type, d.version, d.created_at,
+                   d.modified_at, d.approved_at, d.effective_at, d.deprecated_at, d.status
+            FROM document d
+            JOIN doc_name dn ON d.doc_name_id = dn.id
+            ORDER BY d.created_at DESC
+        """
         try:
             with self._get_connection() as conn:
                 with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -222,6 +303,35 @@ class SQLStore:
         except Exception as e:
             print(f"❌ [SQLStore] 목록 조회 실패: {e}")
             return []
+
+    def update_document_status(
+        self,
+        document_id: int,
+        status: str,
+        approved_at: str = None,
+        effective_at: str = None,
+        deprecated_at: str = None
+    ) -> bool:
+        """문서 상태 업데이트 (폐기, 사용중, 승인대기중)"""
+        query = """
+            UPDATE document
+            SET status = %s,
+                modified_at = CURRENT_TIMESTAMP,
+                approved_at = COALESCE(%s, approved_at),
+                effective_at = COALESCE(%s, effective_at),
+                deprecated_at = COALESCE(%s, deprecated_at)
+            WHERE id = %s
+        """
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(query, (status, approved_at, effective_at, deprecated_at, document_id))
+                    conn.commit()
+            print(f"✅ [SQLStore] 문서 상태 변경: ID {document_id} → {status}")
+            return True
+        except Exception as e:
+            print(f"❌ [SQLStore] 문서 상태 변경 실패: {e}")
+            return False
 
     # Users 테이블 관련 메서드
     def save_user(self, name: str, rank: str = None, dept: str = None) -> Optional[int]:
@@ -281,9 +391,134 @@ class SQLStore:
         except Exception:
             return []
 
+    # ═══════════════════════════════════════════════════════════════════════════
+    # 마이그레이션 함수
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    def migrate_v2(self) -> bool:
+        """
+        v2 스키마 마이그레이션:
+        - doc_name 테이블 생성
+        - document 테이블에 새 컬럼 추가 (modified_at, approved_at, effective_at, deprecated_at, status)
+        - document.doc_name → doc_name 테이블로 이관 및 FK 연결
+        """
+        print("🔄 [SQLStore] 마이그레이션 v2 시작...")
+
+        migration_queries = [
+            # 1. doc_name 테이블 생성
+            """
+            CREATE TABLE IF NOT EXISTS doc_name (
+                id SERIAL PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE
+            );
+            """,
+
+            # 2. document 테이블에 새 컬럼 추가
+            "ALTER TABLE document ADD COLUMN IF NOT EXISTS modified_at TIMESTAMP;",
+            "ALTER TABLE document ADD COLUMN IF NOT EXISTS approved_at TIMESTAMP;",
+            "ALTER TABLE document ADD COLUMN IF NOT EXISTS effective_at TIMESTAMP;",
+            "ALTER TABLE document ADD COLUMN IF NOT EXISTS deprecated_at TIMESTAMP;",
+            "ALTER TABLE document ADD COLUMN IF NOT EXISTS status TEXT DEFAULT '사용중';",
+            "ALTER TABLE document ADD COLUMN IF NOT EXISTS doc_name_id INTEGER;",
+
+            # 3. 기존 doc_name 데이터를 doc_name 테이블로 이관
+            """
+            INSERT INTO doc_name (name)
+            SELECT DISTINCT doc_name FROM document
+            WHERE doc_name IS NOT NULL
+            ON CONFLICT (name) DO NOTHING;
+            """,
+
+            # 4. doc_name_id 값 업데이트
+            """
+            UPDATE document d
+            SET doc_name_id = dn.id
+            FROM doc_name dn
+            WHERE d.doc_name = dn.name AND d.doc_name_id IS NULL;
+            """,
+
+            # 5. 인덱스 생성
+            "CREATE INDEX IF NOT EXISTS idx_document_doc_name_id ON document(doc_name_id);",
+        ]
+
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    for i, query in enumerate(migration_queries, 1):
+                        try:
+                            cur.execute(query)
+                            print(f"   ✅ 단계 {i} 완료")
+                        except Exception as e:
+                            # 이미 존재하는 컬럼 등 무시
+                            if "already exists" in str(e) or "does not exist" in str(e):
+                                print(f"   ⏩ 단계 {i} 스킵 (이미 적용됨)")
+                            else:
+                                print(f"   ⚠️ 단계 {i} 경고: {e}")
+                    conn.commit()
+
+            print("✅ [SQLStore] 마이그레이션 v2 완료!")
+            return True
+
+        except Exception as e:
+            print(f"❌ [SQLStore] 마이그레이션 실패: {e}")
+            return False
+
+    def check_migration_status(self) -> Dict:
+        """현재 스키마 상태 확인"""
+        status = {
+            "doc_name_table": False,
+            "document_new_columns": False,
+            "doc_name_id_populated": False
+        }
+
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    # doc_name 테이블 존재 확인
+                    cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'doc_name')")
+                    status["doc_name_table"] = cur.fetchone()[0]
+
+                    # document 테이블 새 컬럼 확인
+                    cur.execute("""
+                        SELECT column_name FROM information_schema.columns
+                        WHERE table_name = 'document' AND column_name IN ('status', 'doc_name_id')
+                    """)
+                    columns = [row[0] for row in cur.fetchall()]
+                    status["document_new_columns"] = 'status' in columns and 'doc_name_id' in columns
+
+                    # doc_name_id 채워졌는지 확인
+                    if status["document_new_columns"]:
+                        cur.execute("SELECT COUNT(*) FROM document WHERE doc_name_id IS NOT NULL")
+                        count = cur.fetchone()[0]
+                        cur.execute("SELECT COUNT(*) FROM document")
+                        total = cur.fetchone()[0]
+                        status["doc_name_id_populated"] = (count == total) if total > 0 else True
+
+            return status
+        except Exception as e:
+            print(f"❌ 상태 확인 실패: {e}")
+            return status
+
+
 if __name__ == "__main__":
     # 테스트
     store = SQLStore()
+
+    # 마이그레이션 상태 확인
+    print("\n📊 현재 스키마 상태:")
+    status = store.check_migration_status()
+    for key, value in status.items():
+        print(f"   {key}: {'✅' if value else '❌'}")
+
+    # 마이그레이션 필요 시 실행
+    if not all(status.values()):
+        print("\n⚠️ 마이그레이션이 필요합니다.")
+        user_input = input("마이그레이션을 실행하시겠습니까? (y/n): ")
+        if user_input.lower() == 'y':
+            store.migrate_v2()
+    else:
+        print("\n✅ 스키마가 최신 상태입니다.")
+
     store.init_db()
 
     # 사용자 생성 테스트
