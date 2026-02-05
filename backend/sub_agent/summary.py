@@ -34,14 +34,14 @@ def summary_agent_node(state: AgentState):
 
     # 3. 모드별 요약 수행
     if mode == "section_summary":
-        system_content = """당신은 SOP 전문가입니다. 문서를 논리적 조항/섹션 구조에 따라 정리하세요.
+        system_content = """당신은 SOP 전문가입니다. 문서를 논리적 조항/섹션 구조에 따라 정리하여 **사용자에게 바로 전달될 최종 답변 형식**으로 작성하세요.
         - 형식: '1. 섹션명: 핵심 내용 요약'
         - 존재하는 섹션만 출력하고, 각 섹션은 2~5개의 짧은 불릿 포인트로 작성하세요.
-        - 한국어로 답변하세요."""
+        - 한국어로 친절하고 전문적인 말투로 답변하세요."""
         user_content = f"다음 문서를 조항별로 요약하세요.\n질문: {query}\n\n[문서 본문]\n{search_res}"
     else:
-        system_content = """문서의 핵심을 6~10줄 또는 5~8개의 불릿 포인트로 요약하세요. 
-        핵심 위주로 간결하게 한국어로 답변하세요."""
+        system_content = """문서의 핵심을 6~10줄 또는 5~8개의 불릿 포인트로 요약하여 **사용자에게 바로 전달될 최종 답변 형식**으로 작성하세요. 
+        핵심 위주로 간결하고 친절한 한국어로 답변하세요."""
         user_content = f"다음 문서를 요약하세요.\n질문: {query}\n\n[문서 본문]\n{search_res}"
 
     res = client.chat.completions.create(
@@ -53,4 +53,5 @@ def summary_agent_node(state: AgentState):
     )
     
     report_tag = "[요약 에이전트 - 조항별 구조 정리]" if mode == "section_summary" else "[요약 에이전트 - 전체 핵심 요약]"
-    return {"messages": [{"role": "assistant", "content": f"{report_tag}\n{res.choices[0].message.content}"}]}
+    final_answer = f"{report_tag}\n{res.choices[0].message.content}\n\n[DONE]"
+    return {"messages": [{"role": "assistant", "content": final_answer}]}

@@ -230,6 +230,10 @@ def orchestrator_node(state: AgentState):
     3. comparison: 구버전/신버전 비교 (SQL 버전 히스토리)
     4. graph: 참조/인용 관계 확인 (Graph DB)
     
+    [중요 종료 조건]
+    - 서브 에이전트(특히 summary)가 답변 마지막에 `[DONE]`을 포함했거나, 답변 내용이 질문에 충분히 대답하고 있다면 **절대 다시 질문하거나 요약하지 말고 즉시 `finish`를 선택**하세요.
+    - 이미 보고된 내용을 다듬기 위해 다른 에이전트를 호출하지 마세요.
+    
     [출력 형식]
     JSON 형식으로 'next_action' (agent 이름 또는 'finish')과 'reason'을 반환하세요.
     예: {"next_action": "retrieval", "reason": "규정 검색 결과가 부족하여 재검색 필요"}
@@ -251,12 +255,14 @@ def orchestrator_node(state: AgentState):
         
         # 만약 finish라면 최종 답변 생성
         if next_action == "finish":
-            # 한 번 더 호출하여 자연어 답변 생성
-            final_res = client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[{"role": "system", "content": "수집된 정보를 바탕으로 사용자에게 친절하게 최종 답변을 하세요. 한국어로 답변해."}] + messages
-            )
-            return {"next_agent": "end", "final_answer": final_res.choices[0].message.content}
+            # 마지막 서브 에이전트의 보고를 그대로 사용하거나, 히스토리에서 답변 추출
+            last_message = messages[-1]["content"] if messages else "답변을 준비하지 못했습니다."
+            
+            # [DONE] 태그 제거나 깔끔한 마무리 (필요 시)
+            clean_answer = last_message.replace("[DONE]", "").strip()
+            # 만약 보고 형식([검색 에이전트 보고] 등)이 있다면 그대로 노출하거나 정리 가능
+            
+            return {"next_agent": "end", "final_answer": clean_answer}
             
         return {"next_agent": next_action}
         
@@ -400,7 +406,7 @@ def run_agent(query: str, session_id: str = "default", model_name: str = None, e
     }
     
     # LangGraph 실행 (무한 루프 방지를 위해 recursion_limit 설정)
-    result = _app.invoke(initial_state, config={"recursion_limit": 5})
+    result = _app.invoke(initial_state, config={"recursion_limit": 10})
     
     return {
         "answer": result.get("final_answer", "답변을 생성하지 못했습니다."),
