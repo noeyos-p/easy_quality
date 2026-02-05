@@ -96,27 +96,46 @@ def get_device() -> str:
 
 
 def get_client() -> weaviate.WeaviateClient:
-    """Weaviate v4 persistent client"""
+    """Weaviate v4 persistent client (Cloudflare 터널 지원)"""
     global _client
     if _client is None:
+        # Cloudflare 터널 URL
+        CLOUDFLARE_HOST = "five-envelope-barbie-shoes.trycloudflare.com"
+
         try:
-            # v4: connect_to_local or connect_to_custom with ConnectionParams
-            # 로컬망 장비이므로 connect_to_local에 host만 지정해도 충분함
-            _client = weaviate.connect_to_local(
-                host=WEAVIATE_HOST,
-                port=WEAVIATE_PORT,
-                grpc_port=50051
+            # Cloudflare 터널 (HTTPS) - gRPC는 50051로 설정하되 실제론 HTTP fallback 사용
+            _client = weaviate.connect_to_custom(
+                http_host=CLOUDFLARE_HOST,
+                http_port=443,
+                http_secure=True,
+                grpc_host=CLOUDFLARE_HOST,
+                grpc_port=50051,  # 다른 포트로 설정 (실제 gRPC 안 씀)
+                grpc_secure=True,
+                skip_init_checks=True,
+                additional_config=wvc.init.AdditionalConfig(
+                    timeout=wvc.init.Timeout(init=30, query=60, insert=120)
+                )
             )
-            print(f"✅ Weaviate v4 연결 성공 ({WEAVIATE_HOST}:{WEAVIATE_PORT})")
+            # 연결 테스트
+            _client.collections.list_all()
+            print(f"✅ Weaviate v4 연결 성공 (Cloudflare: {CLOUDFLARE_HOST})")
         except Exception as e:
-            print(f"❌ Weaviate v4 연결 실패 (기본 연결 시도): {e}")
-            # 폴백: 직접 주소로 연결
-            _client = weaviate.connect_to_local(host=WEAVIATE_HOST, port=WEAVIATE_PORT)
-    
-    # 연결 확인 루틴
+            print(f"⚠️ Cloudflare 터널 연결 실패: {e}")
+            print(f"   로컬 폴백 시도 중...")
+            try:
+                _client = weaviate.connect_to_local(
+                    host=WEAVIATE_HOST,
+                    port=WEAVIATE_PORT,
+                    grpc_port=50051
+                )
+                print(f"✅ Weaviate v4 로컬 연결 ({WEAVIATE_HOST}:{WEAVIATE_PORT})")
+            except Exception as e2:
+                print(f"❌ 로컬 연결도 실패: {e2}")
+                raise
+
     if not _client.is_connected():
         _client.connect()
-        
+
     return _client
 
 
