@@ -2,7 +2,7 @@ import json
 import re
 import operator
 from typing import Any, Dict, List, Optional, Annotated, TypedDict, Literal
-from backend.agent import get_zai_client, search_sop_tool, AgentState
+from backend.agent import get_zai_client, search_sop_tool, get_sop_headers_tool, AgentState
 from langgraph.graph import StateGraph, START, END
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -28,17 +28,31 @@ def planner_node(state: SummaryState):
     client = get_zai_client()
     query = state["query"]
     
-    # 1. 문서 ID 추출 및 모드 판단
+    # 1. 문서 ID 추출 및 실제 목차 조회
+    id_prompt = f"다음 질문에서 분석 대상이 되는 문서 ID(예: EQ-SOP-00001)만 추출하세요. 질문: {query}"
+    id_res = client.chat.completions.create(model=state["model"], messages=[{"role": "user", "content": id_prompt}])
+    doc_id = re.search(r'([A-Z]{2}-SOP-\d+)', id_res.choices[0].message.content.upper())
+    doc_id = doc_id.group(1) if doc_id else None
+    
+    actual_headers = ""
+    if doc_id:
+        actual_headers = get_sop_headers_tool.invoke({"sop_id": doc_id})
+        print(f"   📑 [Deep Summary] 실제 목차 파악 성공: {doc_id}")
+
+    # 2. 요약 모드 결정 및 계획 수립
     prompt = f"""사용자의 질문을 분석하여 요약 계획을 세우세요.
     질문: {query}
+    문서 ID: {doc_id}
+    실제 조항 목록:
+    {actual_headers}
     
     [작업]
-    1. 문서 ID 추출 (예: EQ-SOP-00001)
-    2. 요약 모드 결정 (global: 전체 핵심, section: 조항별 상세)
-    3. 조항별 요약인 경우, 요약해야 할 주요 조항 번호들을 추측하거나 (알려진 경우) 목록화하세요.
+    1. 요약 모드 결정 (global: 전체 핵심, section: 조항별 상세)
+    2. 발견된 '실제 조항 목록' 중 질문과 관련이 있거나 요약해야 할 조항 번호들을 선택하세요.
+    3. **절대 조항 번호를 지어내지 말고, 위의 목록에 있는 번호만 사용하세요.**
     
     반드시 JSON으로 답변하세요: 
-    {{"doc_id": "ID", "mode": "global|section", "plan": ["1", "2", "3"]}}"""
+    {{"doc_id": "{doc_id}", "mode": "global|section", "plan": ["1.1", "2.1", "5.4"]}}"""
     
     try:
         res = client.chat.completions.create(
@@ -65,18 +79,25 @@ def worker_node(state: SummaryState):
     
     # 계획이 없거나 global 모드면 일반 검색
     if not plan or state["summary_mode"] == "global":
-        search_res = search_sop_tool.invoke({"query": f"{doc_id} {query}"})
+        search_res = search_sop_tool.invoke({
+            "query": f"{doc_id} {query}",
+            "target_sop_id": doc_id # 특정 문서로 한정
+        })
         return {"full_context": [search_res], "current_step": step + 1}
     
-    # 조항별 검색 (현재 스텝의 조항)
+    # 조항별 검색 (현재 스텝의 조항) - 정밀 타격
     target_clause = plan[step]
-    print(f"   🔍 [Deep Summary] {doc_id} {target_clause}조 정밀 분석 중...")
+    print(f"   🔍 [Deep Summary] {doc_id} {target_clause}조 본문 타격 중...")
     
-    search_query = f"{doc_id} {target_clause}조"
-    search_res = search_sop_tool.invoke({"query": search_query})
+    search_query = f"{target_clause}"
+    search_res = search_sop_tool.invoke({
+        "query": search_query, 
+        "target_sop_id": doc_id, # 다른 문서 노이즈 차단
+        "keywords": [target_clause]
+    })
     
     return {
-        "full_context": [f"--- {target_clause}조 검색 결과 ---\n{search_res}"],
+        "full_context": [f"### [제{target_clause}조 실제 본문 데이터]\n{search_res}"],
         "current_step": step + 1
     }
 
