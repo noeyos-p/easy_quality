@@ -82,10 +82,11 @@ def get_zai_client():
 # ═══════════════════════════════════════════════════════════════════════════
 
 @tool
-def search_sop_tool(query: str, extract_english: bool = False, keywords: List[str] = None) -> str:
+def search_sop_tool(query: str, extract_english: bool = False, keywords: List[str] = None, target_sop_id: str = None) -> str:
     """SOP 문서 검색 도구.
     Hybrid Search(BM25 + Vector) 방식을 사용하여 키워드와 의미론적 연관성을 동시에 고려합니다.
     extract_english: True면 영문 내용 위주로 추출
+    target_sop_id: 특정 문서 ID(예: EQ-SOP-00001)로 검색 범위를 한정할 때 사용
     """
     global _vector_store, _sql_store
     
@@ -114,6 +115,9 @@ def search_sop_tool(query: str, extract_english: bool = False, keywords: List[st
             section = meta.get('section') or meta.get('clause') or "본문"
             content = r.get('text', '')
             
+            if target_sop_id and sop_id.upper() != target_sop_id.upper():
+                continue
+            
             if not content: continue
             
             # 해시로 중복 체크
@@ -122,6 +126,9 @@ def search_sop_tool(query: str, extract_english: bool = False, keywords: List[st
             seen_content.add(content_hash)
             
             display_header = f"📄 [검색] {sop_id} > {section}"
+            
+            # 요약용 정밀 검색(target_sop_id 지정) 시에는 글자 수 제한 대폭 완화
+            limit = 8000 if target_sop_id else 1500
             
             if extract_english:
                 # 영문 추출 로직: 알파벳 비율이 한글보다 높은 문단 필터링
@@ -136,9 +143,9 @@ def search_sop_tool(query: str, extract_english: bool = False, keywords: List[st
                 if eng_paras:
                     results.append(f"{display_header} (영문):\n" + "\n\n".join(eng_paras[:3]))
                 else:
-                    results.append(f"{display_header}:\n{content[:1500]}...")
+                    results.append(f"{display_header}:\n{content[:limit]}...")
             else:
-                results.append(f"{display_header}:\n{content}")
+                results.append(f"{display_header}:\n{content[:limit]}")
 
     # 2. 결과가 전혀 없거나 매우 적을 경우 SQL 키워드 매칭 (보조/확정적 검색)
     if len(results) < 2 and _sql_store and keywords:
@@ -150,9 +157,11 @@ def search_sop_tool(query: str, extract_english: bool = False, keywords: List[st
                 doc_id = doc.get('id')
                 sop_doc = _sql_store.get_document_by_id(doc_id)
                 if sop_doc:
+                    # 특정 문서 타겟팅 시에는 SQL에서도 더 많이 가져옴
+                    sql_limit = 10000 if target_sop_id else 2000
                     full_content = sop_doc.get("content", "")
                     if full_content:
-                        results.append(f"📄 [문서 전체 가이드] {doc_name}:\n{full_content[:2000]}...")
+                        results.append(f"📄 [문서 전체 가이드] {doc_name}:\n{full_content[:sql_limit]}...")
                 
     return "\n\n".join(results) if results else "검색 결과 없음. 검색어나 키워드를 바꿔보세요."
 
@@ -187,6 +196,33 @@ def get_references_tool(sop_id: str) -> str:
     if not _graph_store: return ""
     refs = _graph_store.get_document_references(sop_id)
     return str(refs)
+
+@tool
+def get_sop_headers_tool(sop_id: str) -> str:
+    """특정 문서의 실제 조항(Clause) 목록과 제목을 조회합니다.
+    AI가 요약 계획을 세울 때 '짐작'하지 않고 실제 구조를 파악하기 위해 사용합니다.
+    """
+    global _sql_store
+    if not _sql_store: return "SQL 저장소 연결 실패"
+    
+    doc = _sql_store.get_document_by_name(sop_id)
+    if not doc: return f"'{sop_id}' 문서를 찾을 수 없습니다."
+    
+    chunks = _sql_store.get_chunks_by_document(doc['id'])
+    if not chunks: return f"'{sop_id}' 문서의 조항 정보를 찾을 수 없습니다."
+    
+    # 조항 번호와 헤더 정보 추출
+    headers = []
+    seen_clauses = set()
+    for c in chunks:
+        clause = c.get('clause')
+        if clause and clause not in seen_clauses:
+            meta = c.get('metadata') or {}
+            section = meta.get('section') or ""
+            headers.append(f"- {clause}: {section}")
+            seen_clauses.add(clause)
+            
+    return f"[{sop_id} 조항 목록]\n" + "\n".join(headers)
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Agent State
@@ -421,5 +457,6 @@ AGENT_TOOLS = [
     search_sop_tool,
     get_version_history_tool,
     compare_versions_tool,
-    get_references_tool
+    get_references_tool,
+    get_sop_headers_tool
 ]
