@@ -23,6 +23,9 @@ import json
 # ═══════════════════════════════════════════════════════════════════════════
 
 DEFAULT_COLLECTION = "documents"
+# Cloudflare 터널 URL (HTTPS)
+WEAVIATE_URL = "https://five-envelope-barbie-shoes.trycloudflare.com"
+# 로컬 폴백용
 WEAVIATE_HOST = "192.168.0.79"
 WEAVIATE_PORT = 8080
 
@@ -96,27 +99,39 @@ def get_device() -> str:
 
 
 def get_client() -> weaviate.WeaviateClient:
-    """Weaviate v4 persistent client"""
+    """Weaviate v4 persistent client (Cloudflare 터널 지원)"""
     global _client
     if _client is None:
         try:
-            # v4: connect_to_local or connect_to_custom with ConnectionParams
-            # 로컬망 장비이므로 connect_to_local에 host만 지정해도 충분함
-            _client = weaviate.connect_to_local(
-                host=WEAVIATE_HOST,
-                port=WEAVIATE_PORT,
-                grpc_port=50051
+            # Cloudflare 터널 (HTTPS) 연결
+            _client = weaviate.connect_to_custom(
+                http_host="five-envelope-barbie-shoes.trycloudflare.com",
+                http_port=443,
+                http_secure=True,
+                grpc_host="five-envelope-barbie-shoes.trycloudflare.com",
+                grpc_port=443,
+                grpc_secure=True,
+                skip_init_checks=True  # 터널 환경에서 초기 체크 스킵
             )
-            print(f"✅ Weaviate v4 연결 성공 ({WEAVIATE_HOST}:{WEAVIATE_PORT})")
+            print(f"✅ Weaviate v4 연결 성공 (Cloudflare 터널)")
         except Exception as e:
-            print(f"❌ Weaviate v4 연결 실패 (기본 연결 시도): {e}")
-            # 폴백: 직접 주소로 연결
-            _client = weaviate.connect_to_local(host=WEAVIATE_HOST, port=WEAVIATE_PORT)
-    
+            print(f"⚠️ Cloudflare 터널 연결 실패, 로컬 폴백 시도: {e}")
+            try:
+                # 로컬 폴백
+                _client = weaviate.connect_to_local(
+                    host=WEAVIATE_HOST,
+                    port=WEAVIATE_PORT,
+                    grpc_port=50051
+                )
+                print(f"✅ Weaviate v4 로컬 연결 성공 ({WEAVIATE_HOST}:{WEAVIATE_PORT})")
+            except Exception as e2:
+                print(f"❌ Weaviate v4 연결 실패: {e2}")
+                raise
+
     # 연결 확인 루틴
     if not _client.is_connected():
         _client.connect()
-        
+
     return _client
 
 
@@ -569,3 +584,4 @@ def is_model_compatible(model_path: str) -> bool:
     spec = EMBEDDING_MODEL_SPECS.get(model_path)
     if not spec: return False
     return spec['dim'] <= MAX_EMBEDDING_DIM and spec['memory_mb'] <= MAX_MEMORY_MB
+
