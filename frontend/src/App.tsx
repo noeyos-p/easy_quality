@@ -56,7 +56,6 @@ function App() {
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false)
   const [uploadFile, setUploadFile] = useState<File | null>(null)
   const [isUploading, setIsUploading] = useState(false)
-  const [useLlmMetadata, setUseLlmMetadata] = useState(true)
   const [uploadProgress, setUploadProgress] = useState<string>('')
 
   // 파일 트리 상태 (데모 데이터)
@@ -180,7 +179,7 @@ function App() {
     formData.append('chunk_size', '500')
     formData.append('chunk_overlap', '50')
     formData.append('use_langgraph', 'true')
-    formData.append('use_llm_metadata', useLlmMetadata.toString())
+    formData.append('use_llm_metadata', 'true')
 
     try {
       const response = await fetch(`${API_URL}/rag/upload`, {
@@ -224,7 +223,6 @@ function App() {
           setIsUploadModalOpen(false)
           setUploadFile(null)
           setUploadProgress('')
-          setUseLlmMetadata(true)
         }, 2000)
       } else {
         const error = await response.json()
@@ -499,19 +497,7 @@ function App() {
                 className="file-input"
               />
 
-              <div className="upload-options">
-                <label className="checkbox-label">
-                  <input
-                    type="checkbox"
-                    checked={useLlmMetadata}
-                    onChange={(e) => setUseLlmMetadata(e.target.checked)}
-                  />
-                  <span>AI 기반 메타데이터 추출 활성화</span>
-                </label>
-                <p className="option-description">
-                  문서 ID, 제목, 버전, 시행일, 담당부서 등을 AI가 자동으로 추출합니다
-                </p>
-              </div>
+
 
               {uploadProgress && (
                 <div className="upload-progress">
@@ -525,7 +511,6 @@ function App() {
                 setIsUploadModalOpen(false)
                 setUploadFile(null)
                 setUploadProgress('')
-                setUseLlmMetadata(false)
               }}>Cancel</button>
               <button onClick={handleUpload} disabled={!uploadFile || isUploading}>
                 {isUploading ? '[WAIT] Uploading...' : '[OK] Upload'}
