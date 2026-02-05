@@ -1,14 +1,14 @@
 """
 RAG 챗봇 API v11.0 + Agent (Z.AI)
 
-🔥 v11.0 변경사항:
+ v11.0 변경사항:
 - LLM 백엔드 변경: Ollama → Z.AI GLM-4.7-Flash
 - 에이전트 도구 성능 강화
 - LangSmith 추적 지원 및 최적화
 - 되묻기 로직 제거 및 검색 결과 직접 출력
 """
 
-# 🔥 .env 파일 자동 로드 (다른 import보다 먼저!)
+#  .env 파일 자동 로드 (다른 import보다 먼저!)
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -17,6 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from typing import List, Dict, Optional
+from contextlib import asynccontextmanager
 import torch
 import time
 import uuid
@@ -24,12 +25,13 @@ import re
 
 from backend.sql_store import SQLStore
 sql_store = SQLStore()
-# sql_store.init_db()  # 🔥 main()으로 이동하여 중복 호출 방지
+# sql_store.init_db()  #  main()으로 이동하여 중복 호출 방지
 
 # RAG 모듈 - 레거시 (폴백용)
 # RAG 모듈 - 레거시 (폴백용) 제거됨
 # LangGraph 파이프라인이 전적으로 처리
 
+from sentence_transformers import SentenceTransformer
 from backend import vector_store
 # from backend.prompt import build_rag_prompt, build_chunk_prompt (제거됨)
 from backend.llm import (
@@ -40,17 +42,36 @@ from backend.llm import (
     HUGGINGFACE_MODELS,
 )
 
-# 🔥 LangGraph 파이프라인 (v9.2)
+#  Document pipeline
 try:
-    from backend.document_pipeline import process_document, state_to_chunks, Chunk
+    from backend.document_pipeline import process_document
+    from dataclasses import dataclass
+
+    @dataclass
+    class Chunk:
+        text: str
+        metadata: dict
+        index: int = 0
+
     LANGGRAPH_AVAILABLE = True
-    print("✅ LangGraph 파이프라인 사용 가능")
+    print(" Document pipeline 사용 가능")
 except ImportError as e:
     LANGGRAPH_AVAILABLE = False
-    print(f"⚠️ LangGraph 사용 불가, 레거시 모드: {e}")
+    print(f" Document pipeline 사용 불가: {e}")
 
 
-app = FastAPI(title="RAG Chatbot API", version="9.2.0")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    yield
+    # Shutdown
+    print("\n 서버 종료 중...")
+    vector_store.close_client()
+    if _graph_store:
+        _graph_store.close()
+        print(" Neo4j 연결 종료됨")
+
+app = FastAPI(title="RAG Chatbot API", version="9.2.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -61,16 +82,6 @@ app.add_middleware(
 )
 
 
-@app.on_event("shutdown")
-def shutdown_event():
-    """서버 종료 시 리소스 정리"""
-    print("\n🛑 서버 종료 중...")
-    vector_store.close_client()
-    if _graph_store:
-        _graph_store.close()
-        print("🛑 Neo4j 연결 종료됨")
-
-
 # ═══════════════════════════════════════════════════════════════════════════
 # 설정
 # ═══════════════════════════════════════════════════════════════════════════
@@ -78,9 +89,9 @@ def shutdown_event():
 DEFAULT_CHUNK_SIZE = 500
 DEFAULT_OVERLAP = 50
 DEFAULT_CHUNK_METHOD = "article"
-DEFAULT_N_RESULTS = 7  # 🔥 5 -> 7 상향
-DEFAULT_SIMILARITY_THRESHOLD = 0.30  # 🔥 0.35 -> 0.30 (더 많은 맥락 확보)
-USE_LANGGRAPH = True  # 🔥 LangGraph 파이프라인 사용 여부
+DEFAULT_N_RESULTS = 7  #  5 -> 7 상향
+DEFAULT_SIMILARITY_THRESHOLD = 0.30  #  0.35 -> 0.30 (더 많은 맥락 확보)
+USE_LANGGRAPH = True  #  LangGraph 파이프라인 사용 여부
 
 PRESET_MODELS = {
     "multilingual-e5-small": "intfloat/multilingual-e5-small",
@@ -137,7 +148,7 @@ class AskRequest(BaseModel):
     n_results: int = DEFAULT_N_RESULTS
     embedding_model: str = "multilingual-e5-small"
     llm_model: str = "glm-4.7-flash"
-    llm_backend: str = "zai"  # 🔥 기본값 zai로 변경
+    llm_backend: str = "zai"  #  기본값 zai로 변경
     temperature: float = 0.7
     filter_doc: Optional[str] = None
     language: str = "ko"
@@ -157,7 +168,7 @@ class LLMRequest(BaseModel):
 class DeleteDocRequest(BaseModel):
     doc_name: str
     collection: str = "documents"
-    delete_from_neo4j: bool = True  # 🔥 Neo4j에서도 삭제
+    delete_from_neo4j: bool = True  #  Neo4j에서도 삭제
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -178,16 +189,16 @@ def format_context(results: List[Dict]) -> str:
         text = r.get("text", "")
         similarity = r.get("similarity", 0)
         
-        # 🔥 v9.2: 개선된 출처 표시
-        sop_id = meta.get("sop_id", "")
+        #  v9.2: 개선된 출처 표시
+        doc_id = meta.get("doc_id", "")
         section_path = meta.get("section_path", "")
         page = meta.get("page", "")
         article_num = meta.get("article_num", "")
         
         # 출처 헤더 구성
         source_parts = []
-        if sop_id:
-            source_parts.append(f"[{sop_id}]")
+        if doc_id:
+            source_parts.append(f"[{doc_id}]")
         if section_path:
             source_parts.append(f"> {section_path}")
         if page:
@@ -197,7 +208,7 @@ def format_context(results: List[Dict]) -> str:
         
         source_header = " ".join(source_parts) if source_parts else f"[문서 {i}]"
         
-        context_parts.append(f"📄 {source_header}\n{text}")
+        context_parts.append(f"{source_header}\n{text}")
     
     return "\n\n---\n\n".join(context_parts)
 
@@ -260,7 +271,7 @@ def list_llm_models():
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 🔥 API 엔드포인트 - 업로드 (LangGraph v9.2)
+#  API 엔드포인트 - 업로드 (LangGraph v9.2)
 # ═══════════════════════════════════════════════════════════════════════════
 
 @app.post("/rag/upload")
@@ -271,8 +282,8 @@ async def upload_document(
     chunk_method: str = Form(DEFAULT_CHUNK_METHOD),
     model: str = Form("multilingual-e5-small"),
     overlap: int = Form(DEFAULT_OVERLAP),
-    use_langgraph: bool = Form(True),  # 🔥 LangGraph 사용 여부
-    use_llm_metadata: bool = Form(True),  # 🔥 LLM 메타데이터 추출 사용 여부
+    use_langgraph: bool = Form(True),  #  LangGraph 사용 여부
+    use_llm_metadata: bool = Form(True),  #  LLM 메타데이터 추출 사용 여부
 ):
     """
     문서 업로드 (LangGraph v9.2 파이프라인)
@@ -288,67 +299,60 @@ async def upload_document(
         filename = file.filename
         
         print(f"\n{'='*70}")
-        print(f"📄 문서 업로드: {filename}")
-        print(f"{'='*70}")
-        
-        # LangGraph 파이프라인 필수
-        if not LANGGRAPH_AVAILABLE:
-            raise HTTPException(500, "LangGraph 파이프라인이 로드되지 않았습니다.")
-            
-        # === LangGraph 파이프라인 (v9.2) ===
-        print(f"   🔥 LangGraph 파이프라인 사용")
-        print(f"   🔥 LLM 메타데이터 추출: {'활성화' if use_llm_metadata else '비활성화'}")
+        print(f"문서 업로드: {filename}")
+        print(f"{'='*70}\n")
+
+        # ========================================
+        # 문서 파싱
+        # ========================================
+        print(f"[1단계] 문서 파싱")
+        print(f"  파이프라인: PDF 조항 v2.0")
+        print(f"  LLM 메타데이터: {'🟢 활성' if use_llm_metadata else '비활성'}")
+        if use_llm_metadata:
+            print(f"  LLM 모델: gpt-4o-mini")
+        print()
+
+        model_path = resolve_model_path(model)
+        embed_model = SentenceTransformer(model_path)
 
         result = process_document(
-            filename=filename,
+            file_path=filename,
             content=content,
-            chunk_size=chunk_size,
-            chunk_overlap=overlap,
-            debug=True,
             use_llm_metadata=use_llm_metadata,
-            use_clause_parsing=True  # GXP 문서 조항 번호 기반 파싱
+            embed_model=embed_model
         )
-        
+
         if not result.get("success"):
             errors = result.get("errors", ["알 수 없는 오류"])
-            raise HTTPException(400, f"문서 처리 실패: {errors}")
+            raise HTTPException(400, f"🔴 문서 처리 실패: {errors}")
+
+        chunks_data = result["chunks"]
+        if not chunks_data:
+            raise HTTPException(400, "🔴 텍스트 추출 실패")
+
+        from dataclasses import dataclass
+        @dataclass
+        class Chunk:
+            text: str
+            metadata: dict
+            index: int = 0
+
+        chunks = [Chunk(text=c["text"], metadata=c["metadata"], index=c["index"]) for c in chunks_data]
+        doc_id = result.get("doc_id")
+        doc_title = result.get("doc_title")
+        pipeline_version = "pdf-clause-v2.0"
+
+        print(f"  🟢 파싱 완료")
+        print(f"     • ID: {doc_id}")
+        print(f"     • 제목: {doc_title}")
+        print(f"     • 조항: {result.get('total_clauses')}개")
+        print(f"     • 청크: {len(chunks)}개\n")
         
-        chunks = state_to_chunks(result)
-        
-        # 메타데이터 보강
-        metadata_base = result.get("metadata", {})
-        sop_id = metadata_base.get("doc_id") or metadata_base.get("sop_id")
-        
-        # 🔥 ID가 없으면 파일명에서 끝자리 숫자로라도 유추 시도
-        if not sop_id:
-            import re
-            id_match = re.search(r'([A-Z0-9]+-[A-Z0-9]+-\d+)', filename)
-            if id_match:
-                sop_id = id_match.group(1)
-            else:
-                sop_id = filename.split('.')[0] # 최후의 수단: 파일명
-        
-        # 제목 설정: 원본 파일명 유지 (사용자 요청)
-        doc_title = filename 
-        extracted_title = metadata_base.get("title")
-        if extracted_title and extracted_title not in filename:
-            doc_title = f"{filename} ({extracted_title})"
-        
-        print(f"   DOC ID: {sop_id}")
-        print(f"   제목: {doc_title}")
-        print(f"   품질 점수: {result.get('quality_score', 0):.0%}")
-        print(f"   변환 방법: {result.get('conversion_method')}")
-        print(f"   총 청크: {len(chunks)}")
-        
-        pipeline_version = "langgraph-v9.2"
-        quality_score = result.get("quality_score", 0)
-        conversion_method = result.get("conversion_method", "unknown")
-        
-        if not chunks:
-            raise HTTPException(400, "문서에서 텍스트를 추출할 수 없습니다.")
-        
-        # === Weaviate 저장 ===
-        model_path = resolve_model_path(model)
+        # ========================================
+        # Weaviate 벡터 저장
+        # ========================================
+        print(f"[2단계] Weaviate 벡터 저장")
+
         texts = [c.text for c in chunks]
         metadatas = [
             {
@@ -359,32 +363,30 @@ async def upload_document(
             }
             for c in chunks
         ]
-        
+
         vector_store.add_documents(
             texts=texts,
             metadatas=metadatas,
             collection_name=collection,
             model_name=model_path
         )
-        print(f"   ✅ Weaviate 저장 완료: {len(chunks)} 청크")
+        print(f"  🟢 저장 완료: {len(chunks)}개 청크\n")
         
-        # === PostgreSQL 저장 ===
+        # ========================================
+        # PostgreSQL 문서 저장
+        # ========================================
+        print(f"[3단계] PostgreSQL 저장")
+
         try:
-            # 원본 마크다운 결정 (LangGraph 결과 우선, 없으면 청크 합산)
-            full_markdown = ""
-            if use_langgraph and 'result' in locals() and result.get("markdown"):
-                full_markdown = result.get("markdown")
-            else:
-                full_markdown = "\n\n".join([c.text for c in chunks])
+            full_markdown = "\n\n".join([c.text for c in chunks])
 
             doc_id_db = sql_store.save_document(
-                doc_name=sop_id,
+                doc_name=doc_id,
                 content=full_markdown,
                 doc_type=filename.split('.')[-1] if '.' in filename else None,
-                version=metadata_base.get("version", "1.0")
+                version="1.0"
             )
-            
-            # 🔥 청크 정보도 PostgreSQL에 저장 (문서-청크 연결)
+
             if doc_id_db and chunks:
                 batch_chunks = [
                     {
@@ -395,163 +397,67 @@ async def upload_document(
                     for c in chunks
                 ]
                 sql_store.save_chunks_batch(doc_id_db, batch_chunks)
+                print(f"  🟢 저장 완료: 문서 + {len(chunks)}개 청크\n")
+            else:
+                print(f"  🔴 저장 실패: DB 저장에 실패했습니다 (ID 생성 불가)\n")
         except Exception as sql_err:
-            print(f"   ⚠️ PostgreSQL 상세 저장 실패: {sql_err}")
-            # 폴백: 기존 유저 코드 방식 (필요 시)
-            # save_chunks_to_db(sop_id, filename, chunks)
-        
-        # === Neo4j 그래프 저장 ===
+            print(f"  🔴 저장 실패: {sql_err}\n")
+
+        # ========================================
+        # Neo4j 그래프 저장
+        # ========================================
+        print(f"[4단계] Neo4j 그래프 저장")
         graph_uploaded = False
         graph_sections = 0
-        
+
         try:
             from backend.graph_store import Neo4jGraphStore
-            
+
             graph = get_graph_store()
             if graph.test_connection():
-                # LangGraph 결과에서 그래프 생성
-                if use_langgraph and LANGGRAPH_AVAILABLE:
-                    # 직접 섹션 데이터로 그래프 생성
-                    _upload_to_neo4j_from_pipeline(graph, result, filename)
-                else:
-                    # 레거시: ParsedDocument에서 생성
-                    from backend.graph_store import document_to_graph
-                    document_to_graph(graph, parsed_doc, sop_id)
-                
+                _upload_to_neo4j_from_pipeline(graph, result, filename)
                 graph_uploaded = True
                 stats = graph.get_graph_stats()
                 graph_sections = stats.get("sections", 0)
-                print(f"   ✅ Neo4j 그래프 업로드 완료")
+                print(f"  🟢 저장 완료: {graph_sections}개 섹션\n")
         except Exception as graph_error:
-            print(f"   ⚠️ Neo4j 그래프 업로드 실패 (무시됨): {graph_error}")
+            print(f"  🔴 연결 실패 (건너뜀)\n")
         
+        # ========================================
+        # 완료
+        # ========================================
         elapsed = round(time.time() - start_time, 2)
-        
+
+        print(f"{'='*70}")
+        print(f"🟢 업로드 완료 ({elapsed}초)")
+        print(f"{'='*70}\n")
+
         return {
             "success": True,
             "filename": filename,
-            "sop_id": sop_id,
+            "doc_id": doc_id,
             "doc_title": doc_title,
             "chunks": len(chunks),
+            "total_clauses": result.get("total_clauses"),
             "chunk_method": chunk_method,
             "pipeline_version": pipeline_version,
-            "quality_score": quality_score,
-            "conversion_method": conversion_method,
             "graph_uploaded": graph_uploaded,
             "elapsed_seconds": elapsed,
-            "metadata": metadata_base,  # 🔥 전체 메타데이터 반환
             "sample_metadata": metadatas[0] if metadatas else {},
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
         import traceback
         traceback.print_exc()
-        raise HTTPException(500, f"업로드 실패: {str(e)}")
+        raise HTTPException(500, f"🔴 실패: {str(e)}")
 
 
 def _upload_to_neo4j_from_pipeline(graph, result: dict, filename: str):
-    """LangGraph 파이프라인 결과를 Neo4j에 업로드 (V22.0 대응)"""
-    metadata = result.get("metadata", {})
-    doc_id = metadata.get("doc_id") or "UNKNOWN"
-    title = metadata.get("title") or filename
-    version = metadata.get("version") or "1.0"
-    effective_date = metadata.get("effective_date")
-    owning_dept = metadata.get("owning_dept")
-    
-    # 1. Document 노드 생성
-    graph.create_document(
-        doc_id=doc_id,
-        title=title,
-        version=version,
-        effective_date=effective_date,
-        owning_dept=owning_dept,
-        metadata=metadata
-    )
-    
-    # 2. DocumentType 처리 (코드 기반)
-    doc_type_code = "SOP" # 기본값
-    if "SOP" in doc_id: doc_type_code = "SOP"
-    elif "WI" in doc_id: doc_type_code = "WI"
-    
-    graph.create_document_type(doc_type_code, "표준작업절차서" if doc_type_code == "SOP" else "작업지침서", doc_type_code)
-    graph.link_doc_to_type(doc_id, doc_type_code)
-    
-    # 3. Section 노드 생성 및 관계 설정
-    sections = result.get("sections", [])
-    
-    for sec in sections:
-        headers = sec.get("headers", {})
-        content = sec.get("content", "")
-        page = sec.get("page", 1)
-        parent_name = sec.get("parent")
-        clause_meta = sec.get("clause_meta", {})
-        
-        # clause_level 및 section_id 유추
-        clause_level = 0
-        current_title = ""
-        for level in range(6, 0, -1):
-            if headers.get(f"H{level}"):
-                clause_level = level
-                current_title = headers[f"H{level}"]
-                break
-        
-        clause_id = sec.get("clause")
-        if not clause_id:
-            num_match = re.match(r'^(\d+(?:\.\d+)*)', current_title)
-            if num_match:
-                clause_id = num_match.group(1)
-        
-        # 번호가 정말 없으면 무시하거나 보충
-        if not clause_id:
-            # 제목이 있고, 너무 길지 않은 경우(제목으로 보기 적당한 경우)에만 임시 ID 생성
-            # 100자 이상이면 제목이라기 보다 본문의 일부일 확률이 높음
-            if current_title and current_title != "Untitled" and len(current_title) < 100:
-                 # 제목 기반 해시를 사용하여 어느 정도 고유성 확보
-                 title_hash = hashlib.md5(current_title.encode()).hexdigest()[:6]
-                 clause_id = f"SEC-{title_hash}" 
-            else:
-                print(f"   ⏩ [Skip] 제목이 없거나 너무 길어(junk) Neo4j 업로드를 건너뜁니다: {current_title[:20]}...")
-                continue
-        
-        section_id = f"{doc_id}:{clause_id}"
-        main_section = clause_id.split('.')[0] if '.' in clause_id else clause_id
-        
-        # Section 노드 생성 (상세 메타데이터 포함)
-        graph.create_section(
-            doc_id=doc_id,
-            section_id=section_id,
-            title=current_title,
-            content=content,
-            clause_level=clause_level,
-            main_section=main_section,
-            llm_meta=clause_meta,
-            page=page
-        )
-        
-        # 4. 계층 관계 (Parent-Child)
-        if parent_name:
-            # 파이프라인에서 제공한 상위 조항 정보 활용
-            parent_section_id = f"{doc_id}:{parent_name}"
-            graph.create_section_hierarchy(parent_section_id, section_id)
-        elif '.' in clause_id:
-            parent_clause_id = '.'.join(clause_id.split('.')[:-1])
-            parent_section_id = f"{doc_id}:{parent_clause_id}"
-            graph.create_section_hierarchy(parent_section_id, section_id)
-        # 5. Concept 연동 (intent_scope 활용)
-        intent_scope = clause_meta.get("intent_scope")
-        if intent_scope:
-            graph.create_concept(intent_scope, intent_scope, intent_scope)
-            graph.link_section_to_concept(section_id, intent_scope)
-            
-        # 6. 타 문서 언급 (MENTIONS) 추적
-        mentions = re.findall(r'((?:EQ-)?SOP[-_]?\d{4,5})', content, re.IGNORECASE)
-        for m in set(mentions):
-            m_id = m.upper().replace('_', '-')
-            if not m_id.startswith('EQ-'): m_id = 'EQ-' + m_id
-            if m_id != doc_id:
-                graph.link_section_to_mention_doc(section_id, m_id)
+    """새 파이프라인 결과를 Neo4j에 업로드 (간소화)"""
+    from backend.graph_store import upload_document_to_graph
+    upload_document_to_graph(graph, result, filename)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -575,7 +481,7 @@ def chat(request: ChatRequest):
     - Manual RAG 로직 제거됨
     - 오직 Agent Orchestrator를 통해서만 답변
     """
-    print(f"🤖 [Agent] 요청 수신: {request.message}")
+    print(f" [Agent] 요청 수신: {request.message}")
     
     try:
         # Agent 실행
@@ -595,7 +501,7 @@ def chat(request: ChatRequest):
             "agent_log": response
         }
     except Exception as e:
-        print(f"❌ [Agent] 에러: {e}")
+        print(f" [Agent] 에러: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(500, str(e))
@@ -652,7 +558,7 @@ def list_documents(collection: str = "documents"):
 @app.delete("/rag/document")
 def delete_document(request: DeleteDocRequest):
     """
-    🔥 문서 삭제 (Weaviate + Neo4j 동시 삭제)
+     문서 삭제 (Weaviate + Neo4j 동시 삭제)
     """
     result = {"chromadb": None, "neo4j": None}
     
@@ -668,13 +574,13 @@ def delete_document(request: DeleteDocRequest):
         try:
             graph = get_graph_store()
             if graph.test_connection():
-                # doc_name에서 sop_id 추출 시도
+                # doc_name에서 doc_id 추출 시도
                 import re
                 sop_match = re.search(r'(EQ-SOP-\d+)', request.doc_name, re.IGNORECASE)
                 if sop_match:
-                    sop_id = sop_match.group(1).upper()
-                    neo4j_result = graph.delete_document(sop_id)
-                    result["neo4j"] = {"success": True, "sop_id": sop_id, "deleted": neo4j_result}
+                    doc_id = sop_match.group(1).upper()
+                    neo4j_result = graph.delete_document(doc_id)
+                    result["neo4j"] = {"success": True, "doc_id": doc_id, "deleted": neo4j_result}
                 else:
                     result["neo4j"] = {"success": False, "message": "SOP ID를 추출할 수 없음"}
         except Exception as e:
@@ -776,7 +682,7 @@ async def graph_upload_document(
         return {
             "success": True,
             "filename": filename,
-            "sop_id": result.get("metadata", {}).get("sop_id"),
+            "doc_id": result.get("metadata", {}).get("doc_id"),
             "sections": len(result.get("sections", [])),
             "pipeline": "langgraph"
         }
@@ -798,14 +704,14 @@ def graph_list_documents():
         raise HTTPException(500, f"문서 목록 조회 실패: {str(e)}")
 
 
-@app.get("/graph/document/{sop_id}")
-def graph_get_document(sop_id: str):
+@app.get("/graph/document/{doc_id}")
+def graph_get_document(doc_id: str):
     """특정 문서 상세"""
     try:
         graph = get_graph_store()
-        doc = graph.get_document(sop_id)
+        doc = graph.get_document(doc_id)
         if not doc:
-            raise HTTPException(404, f"문서를 찾을 수 없습니다: {sop_id}")
+            raise HTTPException(404, f"문서를 찾을 수 없습니다: {doc_id}")
         return doc
     except HTTPException:
         raise
@@ -813,36 +719,36 @@ def graph_get_document(sop_id: str):
         raise HTTPException(500, f"문서 조회 실패: {str(e)}")
 
 
-@app.delete("/graph/document/{sop_id}")
-def graph_delete_document(sop_id: str):
+@app.delete("/graph/document/{doc_id}")
+def graph_delete_document(doc_id: str):
     """Neo4j에서 문서 삭제"""
     try:
         graph = get_graph_store()
-        result = graph.delete_document(sop_id)
-        return {"success": True, "sop_id": sop_id, "result": result}
+        result = graph.delete_document(doc_id)
+        return {"success": True, "doc_id": doc_id, "result": result}
     except Exception as e:
         raise HTTPException(500, f"문서 삭제 실패: {str(e)}")
 
 
-@app.get("/graph/document/{sop_id}/hierarchy")
-def graph_get_hierarchy(sop_id: str):
+@app.get("/graph/document/{doc_id}/hierarchy")
+def graph_get_hierarchy(doc_id: str):
     """문서 섹션 계층"""
     try:
         graph = get_graph_store()
-        hierarchy = graph.get_section_hierarchy(sop_id)
-        return {"sop_id": sop_id, "hierarchy": hierarchy}
+        hierarchy = graph.get_section_hierarchy(doc_id)
+        return {"doc_id": doc_id, "hierarchy": hierarchy}
     except Exception as e:
         raise HTTPException(500, f"계층 구조 조회 실패: {str(e)}")
 
 
-@app.get("/graph/document/{sop_id}/references")
-def graph_get_references(sop_id: str):
+@app.get("/graph/document/{doc_id}/references")
+def graph_get_references(doc_id: str):
     """문서 참조 관계"""
     try:
         graph = get_graph_store()
-        refs = graph.get_document_references(sop_id)
+        refs = graph.get_document_references(doc_id)
         if not refs:
-            raise HTTPException(404, f"문서를 찾을 수 없습니다: {sop_id}")
+            raise HTTPException(404, f"문서를 찾을 수 없습니다: {doc_id}")
         return refs
     except HTTPException:
         raise
@@ -851,11 +757,11 @@ def graph_get_references(sop_id: str):
 
 
 @app.get("/graph/search/sections")
-def graph_search_sections(keyword: str, sop_id: str = None):
+def graph_search_sections(keyword: str, doc_id: str = None):
     """섹션 검색"""
     try:
         graph = get_graph_store()
-        results = graph.search_sections(keyword, sop_id)
+        results = graph.search_sections(keyword, doc_id)
         return {"keyword": keyword, "results": results, "count": len(results)}
     except Exception as e:
         raise HTTPException(500, f"검색 실패: {str(e)}")
@@ -863,17 +769,17 @@ def graph_search_sections(keyword: str, sop_id: str = None):
 
 @app.get("/graph/search/terms")
 def graph_search_terms(term: str):
-    """용어 검색"""
+    """용어 검색 (간소화 버전: 섹션 검색으로 대체)"""
     try:
         graph = get_graph_store()
-        results = graph.search_by_term(term)
+        results = graph.search_sections(term)
         return {"term": term, "results": results, "count": len(results)}
     except Exception as e:
         raise HTTPException(500, f"용어 검색 실패: {str(e)}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 🔥 API 엔드포인트 - Question 추적
+#  API 엔드포인트 - Question 추적
 # ═══════════════════════════════════════════════════════════════════════════
 
 @app.get("/graph/questions")
@@ -903,18 +809,19 @@ def graph_get_question_sources(question_id: str):
 
 
 @app.get("/graph/stats/section-usage")
-def graph_section_usage_stats(sop_id: str = None):
-    """섹션 사용 통계"""
+def graph_section_usage_stats(doc_id: str = None):
+    """섹션 사용 통계 (간소화: Question 히스토리로 대체)"""
     try:
         graph = get_graph_store()
-        stats = graph.get_section_usage_stats(sop_id)
-        return {"stats": stats, "count": len(stats)}
+        # 간소화 버전: 전체 통계만 제공
+        stats = graph.get_graph_stats()
+        return {"stats": stats}
     except Exception as e:
         raise HTTPException(500, f"통계 조회 실패: {str(e)}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 🤖 API 엔드포인트 - 에이전트 (NEW!)
+#  API 엔드포인트 - 에이전트 (NEW!)
 # ═══════════════════════════════════════════════════════════════════════════
 
 # 에이전트 모듈 임포트
@@ -928,13 +835,13 @@ try:
         ZAI_AVAILABLE
     )
     AGENT_AVAILABLE = True
-    print("✅ 에이전트 모듈 로드 완료")
+    print(" 에이전트 모듈 로드 완료")
 except ImportError as e:
     AGENT_AVAILABLE = False
     LANGCHAIN_AVAILABLE = False
     LANGGRAPH_AGENT_AVAILABLE = False
     ZAI_AVAILABLE = False
-    print(f"⚠️ 에이전트 모듈 로드 실패: {e}")
+    print(f" 에이전트 모듈 로드 실패: {e}")
 
 
 class AgentRequest(BaseModel):
@@ -943,14 +850,14 @@ class AgentRequest(BaseModel):
     session_id: Optional[str] = None
     llm_model: str = "glm-4.7-flash"
     embedding_model: str = "multilingual-e5-small" # 추가
-    n_results: int = DEFAULT_N_RESULTS # 🔥 추가
+    n_results: int = DEFAULT_N_RESULTS #  추가
     use_langgraph: bool = True  # LangGraph 에이전트 사용 여부
 
 
 @app.post("/agent/chat")
 def agent_chat(request: AgentRequest):
     """
-    🤖 에이전트 채팅 - LLM이 도구를 선택해서 실행
+     에이전트 채팅 - LLM이 도구를 선택해서 실행
     
     일반 RAG와 다르게 에이전트가 상황에 맞는 도구를 선택합니다:
     - search_sop_documents: 문서 내용 검색
@@ -965,10 +872,12 @@ def agent_chat(request: AgentRequest):
     session_id = request.session_id or str(uuid.uuid4())
     
     print(f"\n{'='*50}")
-    print(f"🤖 에이전트 질문: {request.message}")
-    print(f"   세션: {session_id}")
-    print(f"   모드: {'LangGraph' if request.use_langgraph else 'Simple'}")
-    
+    print(f"[에이전트] 질문: {request.message}")
+    print(f"  세션: {session_id}")
+    print(f"  모드: {'LangGraph' if request.use_langgraph else 'Simple'}")
+    print(f"  Orchestrator: gpt-4o-mini")
+    print(f"  Worker: {request.llm_model}")
+
     try:
         # 도구 초기화 (처음 한 번만)
         init_agent_tools(vector_store, get_graph_store(), sql_store)
@@ -986,14 +895,15 @@ def agent_chat(request: AgentRequest):
 
         # 본문(answer)이 비어있는데 reasoning만 있는 경우 (토큰 한도 초과 등으로 답변 생성 실패 시)
         if not answer and reasoning:
-            print("⚠️ 본문이 직접적으로 수신되지 않아 사고 과정(Reasoning)을 답변으로 최우선 노출합니다.")
+            print(" 본문이 직접적으로 수신되지 않아 사고 과정(Reasoning)을 답변으로 최우선 노출합니다.")
             result["answer"] = f"[AI 분석 리포트]\n\n{reasoning}"
             answer = result["answer"]
         
         if reasoning:
-            print(f"🧠 모델의 생각(Reasoning) 추출됨 ({len(reasoning)}자)")
+            print(f" 모델의 생각(Reasoning) 추출됨 ({len(reasoning)}자)")
             # 디버깅을 위해 첫 100자 정도 출력
-            print(f"   [THINK] {reasoning[:150].replace('\n', ' ')}...")
+            reasoning_preview = reasoning[:150].replace('\n', ' ')
+            print(f"   [THINK] {reasoning_preview}...")
         
         print(f"   도구 호출: {len(result.get('tool_calls', []))}회")
         print(f"   답변 길이: {len(result.get('answer', ''))} 글자")
@@ -1041,7 +951,7 @@ def agent_tools():
     return {"tools": tools_info, "count": len(tools_info)}
 
 
-# 🔥 테스트용 간단한 에코 엔드포인트
+#  테스트용 간단한 에코 엔드포인트
 class SimpleRequest(BaseModel):
     message: str
 
@@ -1060,39 +970,39 @@ def test_echo(request: SimpleRequest):
 # ═══════════════════════════════════════════════════════════════════════════
 
 def main():
-    print("🚦 시스템 초기화 중...")
+    print("[시스템] 초기화 중...")
     sql_store.init_db()
     
     # Neo4j 연결 확인 (성공 로그는 connect 내부에서 출력됨)
     try:
         get_graph_store()
     except Exception as e:
-        print(f"❌ Neo4j 초기 연결 실패: {e}")
+        print(f" Neo4j 초기 연결 실패: {e}")
 
     # Weaviate 연결 확인 (성공 로그는 get_client 내부에서 출력됨)
     try:
         wv_client = vector_store.get_client()
         if not wv_client.is_connected():
-            print("❌ Weaviate v4 연결 상태 확인 실패")
+            print(" Weaviate v4 연결 상태 확인 실패")
     except Exception as e:
-        print(f"❌ Weaviate v4 연결 체크 중 오류: {e}")
+        print(f" Weaviate v4 연결 체크 중 오류: {e}")
 
     
     import uvicorn
     
     print("\n" + "=" * 60)
-    print("🤖 RAG Chatbot API v11.0 + Z.AI Agent")
+    print(" RAG Chatbot API v11.0 + Z.AI Agent")
     print("=" * 60)
-    print(f"🔥 LLM 백엔드: {'✅ Z.AI (GLM-4.7-Flash)' if ZaiLLM.is_available() else '❌ ZAI_API_KEY 설정 필요'}")
-    print(f"🤖 에이전트: {'✅ 활성화' if AGENT_AVAILABLE else '❌ 비활성화'}")
+    print(f" LLM 백엔드: {' Z.AI (GLM-4.7-Flash)' if ZaiLLM.is_available() else ' ZAI_API_KEY 설정 필요'}")
+    print(f" 에이전트: {' 활성화' if AGENT_AVAILABLE else ' 비활성화'}")
     
     if AGENT_AVAILABLE:
-        print(f"   - LangChain: {'✅' if LANGCHAIN_AVAILABLE else '❌'}")
+        print(f"   - LangChain: {'' if LANGCHAIN_AVAILABLE else ''}")
     print("Docs: http://localhost:8000/docs")
     print("=" * 60)
     print("주요 기능:")
     print("  - LangGraph 문서 파이프라인")
-    print("  - 🤖 ReAct 에이전트 (/agent/chat)")
+    print("  -  ReAct 에이전트 (/agent/chat)")
     print("  - Weaviate(v4) + Neo4j + PostgreSQL")
     print("  - LangSmith 추적 지원")
     print("=" * 60)
