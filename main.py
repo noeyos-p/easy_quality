@@ -505,11 +505,14 @@ def _upload_to_neo4j_from_pipeline(graph, result: dict, filename: str):
         
         # 번호가 정말 없으면 무시하거나 보충
         if not clause_id:
-            # 제목이 있다면 제목의 해시 등을 쓸 수도 있으나 일단 필수 정보로 간주하여 필터링 강화
-            # 단, 'Untitled'는 아니어야 함
-            if current_title and current_title != "Untitled":
-                 clause_id = f"SEC-{headers.get('H1', '0')[:5]}" # 임시 ID
+            # 제목이 있고, 너무 길지 않은 경우(제목으로 보기 적당한 경우)에만 임시 ID 생성
+            # 100자 이상이면 제목이라기 보다 본문의 일부일 확률이 높음
+            if current_title and current_title != "Untitled" and len(current_title) < 100:
+                 # 제목 기반 해시를 사용하여 어느 정도 고유성 확보
+                 title_hash = hashlib.md5(current_title.encode()).hexdigest()[:6]
+                 clause_id = f"SEC-{title_hash}" 
             else:
+                print(f"   ⏩ [Skip] 제목이 없거나 너무 길어(junk) Neo4j 업로드를 건너뜁니다: {current_title[:20]}...")
                 continue
         
         section_id = f"{doc_id}:{clause_id}"

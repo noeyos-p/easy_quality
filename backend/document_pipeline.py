@@ -296,6 +296,8 @@ def node_convert(state: PipelineState) -> PipelineState:
         elif file_type == 'pdf':
             markdown, metadata, method = _convert_pdf_with_fallback(filename, content)
             state["conversion_method"] = method
+            # 🔥 V22.9 Global Noise Filter: 헤더 추론 및 분할 전 전체 문서 클리닝
+            markdown = _clean_noise_globally(markdown)
             # 🔥 PDF는 헤더 추론 필수!
             markdown = _infer_headers(markdown)
             state["conversion_method"] += "+infer-headers"
@@ -641,97 +643,200 @@ def detect_content_start_with_llm(markdown: str) -> Optional[str]:
 
 def discover_structure_with_llm(markdown: str) -> List[Dict]:
     """
-    정규식 매칭이 실패할 경우, LLM을 사용하여 문서 전체의 조항들을 계층적으로 찾아냅니다.
+    AI를 사용하여 문서 전체의 조항 지도를 생성합니다.
     """
-    # 문서가 길 경우 분할 분석이 필요할 수 있으나, 일단 넉넉하게 분석
-    sample_text = markdown[:15000] 
+    sample_text = markdown[:40000] 
     
     prompt = f"""당신은 전문 문서 구조화 엔진입니다.
-다음 마크다운 문서에서 '모든 조항(Clause)' 또는 '섹션'을 누락 없이 찾아내어 JSON 리스트로 응답하세요.
+다음 마크다운 문서에서 '모든 조항'의 시작 지점을 찾아 JSON 리스트로 응답하세요.
 
 [출력 형식]
 [
-  {{"clause": "번호", "title": "제목(한글/영문 포함)", "content": "해당 조항의 전문"}},
+  {{
+    "clause": "번호 (예: 5.1.2.1)", 
+    "title": "제목 (제목이 없다면 번호를 다시 적으세요. 문장은 넣지 마세요.)", 
+    "level": 계층레벨(0부터 시작),
+    "anchor": "해당 조항이 시작되는 텍스트 (반드시 조항 번호를 포함해야 함, 예: '5.1.2 본 절차서는')"
+  }},
   ...
 ]
 
 [작업 규칙]
-1. 문서에 존재하는 모든 조항을 빠짐없이 포함하세요. (개수 제한 없음)
-2. 번호가 없는 단락은 제목의 핵심 키워드를 번호 대신 사용하거나 생략하세요.
-3. 한글과 영문이 혼용된 경우 제목에 두 언어를 모두 포함하세요.
-4. JSON 데이터 외에 어떤 텍스트도 출력하지 마세요.
+1. 문서에 존재하는 모든 번호가 매겨진 조항(2.1, 2.2 등 아주 세밀한 단위까지)을 빠짐없이 포함하세요.
+2. 'anchor'는 본문에 존재하는 텍스트와 완벽히 일치해야 하며, 반드시 '조항 번호'로 시작해야 합니다.
+3. 2.1 뒤에 바로 2.2가 나오더라도 각각 별도의 앵커로 잡으세요. (가장 중요)
+4. 'title'은 5단어 이하의 명칭이어야 합니다. 문장(예: ~적용된다, ~한다)은 절대 제목으로 추출하지 마세요.
+5. 'page X of Y', 'Number: SOP-...' 같은 페이지 헤더/푸터 정보는 무시하세요.
+6. JSON 외의 텍스트는 출력하지 마세요.
 
 [문서 내용]
 {sample_text}
 """
     try:
-        # Z.AI: 복잡한 SOP 계층 구조를 누락 없이 분석하는 데 유리
         llm_res = get_llm_response(prompt, llm_backend="zai", max_tokens=4000, temperature=0.1)
         json_match = re.search(r'\[.*\]', llm_res, re.DOTALL)
         if json_match:
-            discovered = json.loads(json_match.group(0))
-            for item in discovered:
-                item["level"] = 0
-                item["parent_clauses"] = []
-                item["pattern"] = "ai_discovered"
-            return discovered
-    except:
-        return []
+            return json.loads(json_match.group(0))
+    except Exception as e:
+        print(f"   ⚠️ [AI Map] AI 지도 생성 실패: {e}")
     return []
 
 def node_split(state: PipelineState) -> PipelineState:
     """
-    4단계: 조항 또는 헤더 기준 분할 + 계층 구조 구축
-    🔥 v9.5: SOP 최적화 (개별 조항 정밀 파싱)
+    3단계: AI 주도 하이브리드 조항 분할 (AI-Led Hybrid Parsing)
+    1. AI가 먼저 문서의 전체 구조(ID, Title)와 시작점(Anchor)을 파악합니다.
+    2. 파악된 앵커를 기준으로 본문을 정밀하게 분할합니다.
     """
     markdown = state.get("markdown", "")
     use_clause_parsing = state.get("use_clause_parsing", True)
-
+    
     if not markdown:
         state["sections"] = []
         return state
 
-    # 1. 지능형 시작 지점 식별 (헤더/목차 스킵)
-    start_anchor = detect_content_start_with_llm(markdown)
+    # 1. 지능형 시작 지점 식별 (이미 수행됨)
     effective_markdown = markdown
+    start_anchor = detect_content_start_with_llm(markdown)
     if start_anchor:
         anchor_idx = markdown.find(start_anchor)
         if anchor_idx >= 0:
-            print(f"   🎯 [ToC/Header Skip] '{start_anchor[:20]}...' 지점부터 본문 파싱을 시작합니다.")
             effective_markdown = markdown[anchor_idx:]
 
-    # 2. 조항 번호 기반 정규식 파싱 시도
     if use_clause_parsing:
-        sections = split_by_clause(effective_markdown, max_level=0)
+        print("   🔍 [AI Map] AI를 사용하여 조항 지도를 생성 중...")
+        # AI가 본문 전체를 훑으며 조항의 위치(앵커)를 찾습니다.
+        structure = discover_structure_with_llm(effective_markdown)
         
-        # 🔥 [Structure Discovery Fallback] 정규식으로 하나도 안 잡힐 때만 AI 동원
-        if not sections and len(effective_markdown) > 300:
-            print("   🔍 [Structure Discovery] 정규식 매칭 실패, AI 기반 정밀 구조 분석 수행 중...")
-            sections = discover_structure_with_llm(effective_markdown)
-            
-        if sections:
-            # 후처리: 계층 구조(Graph DB용) 및 메타데이터 보강
-            for section in sections:
-                section["page"] = 1 # 기본값
-                # 상위 관계 추출 (정규식 파싱 결과에 parent_clauses가 있음)
-                if not section.get("parent") and section.get("parent_clauses"):
-                    section["parent"] = section["parent_clauses"][-1]
+        if structure:
+            sections = []
+            # 앵커를 기준으로 본문을 자릅니다.
+            for i, item in enumerate(structure):
+                anchor = item.get("anchor", "")
+                next_anchor = structure[i+1].get("anchor", "") if i+1 < len(structure) else None
                 
-                # 🔥 [V22.1 Normalization] headers 가 없는 경우 (split_by_clause/AI 결과) 보충
-                if "headers" not in section:
-                    clause_num = section.get("clause", "")
-                    title = section.get("title", "Untitled")
-                    full_title = f"{clause_num} {title}".strip() if clause_num else title
-                    level = section.get("level", 0)
-                    h_level = min(6, level + 1) # Level 0 -> H1, Level 1 -> H2
+                # 앵커 위치 찾기
+                start_pos = effective_markdown.find(anchor) if anchor else -1
+                if start_pos == -1: continue # 앵커를 못 찾으면 스킵 (AI가 잘못 생성한 경우)
+                
+                # 다음 앵커 전까지를 내용으로 간주
+                if next_anchor:
+                    end_pos = effective_markdown.find(next_anchor, start_pos + len(anchor))
+                    if end_pos == -1: end_pos = len(effective_markdown)
+                else:
+                    end_pos = len(effective_markdown)
+                
+                content = effective_markdown[start_pos:end_pos].strip()
+                
+                # 🔥 [V22.6 Content Purity] 반복적인 SOP 헤더/푸터 및 메타데이터 제거
+                junk_patterns = [
+                    r'Number:\s*EQ-SOP-\d+.*',
+                    r'Version:\s*\d+\.\d+.*',
+                    r'Effective Date:\s*\d{4}-\d{2}-\d{2}.*',
+                    r'Owning Department\s*.*',
+                    r'Title\s*.*',
+                    r'\d+\s+of\s+\d+', # 페이지 번호 (9 of 13)
+                    r'GMP\s+문서\s+체계.*' # 문서명 반복 노출
+                ]
+                for pattern in junk_patterns:
+                    content = re.sub(pattern, '', content, flags=re.IGNORECASE).strip()
+
+                # 섹션 객체 생성
+                clause_num = item.get("clause", "")
+                title = item.get("title", "Untitled").strip()
+                level = item.get("level", 0)
+                
+                # 🔥 [V22.7 Title Refinement] 문장형 제목 감지 및 정규화 (Heuristics)
+                # 1. 문장 종결 어미 체크 (다., 함., 임. 등)
+                is_sentence = any(title.endswith(x) for x in ["다.", "함.", "임.", "요.", "다", "함", "임"])
+                # 2. 한국어 조사 포함 여부 (는, 은, 이, 가, 를, 을 - 주어나 목적어가 있는 문장일 확률 높음)
+                has_particles = any(x in title for x in ["는 ", "은 ", "이 ", "가 ", "를 ", "을 "])
+                
+                # 제목이 문장형이거나 길이가 30자를 넘는 경우 정규화
+                if clause_num and (len(title) > 30 or is_sentence or (has_particles and len(title) > 20)):
+                    print(f"   🩹 [Title] 문장형 제목 정규화: {title[:20]}...")
+                    # 원래 제목이 본문에 아직 포함되지 않은 경우에만 본문 상단에 추가 (중복 방지)
+                    if title not in content:
+                        content = f"{title}\n\n{content}"
+                    title = f"조항 {clause_num}"
+                
+                # 🔥 [Junk Merging] 조항 번호가 없고 제목이 너무 길면(50자 이상) 본문 파편으로 간주하여 병합
+                if not clause_num and len(title) > 50:
+                    if sections:
+                        # 이전 섹션에 내용 추가
+                        sections[-1]["content"] += f"\n\n{content}"
+                        print(f"   🩹 [Merge] 파편섹션('{title[:20]}...')을 이전 조항에 병합했습니다.")
+                        continue
+                
+                # 🔥 [V22.8 Sub-split] AI가 놓친 세부 조항(2.2 등)이 본문 중간에 섞여있는지 정규식으로 한 번 더 체크
+                sub_sections = []
+                if clause_num and "." in clause_num:
+                    # 현재 조항 번호 형식을 기반으로 비슷한 패턴 탐색 (예: 2.1 -> 2.2, 2.3 등)
+                    base_num = ".".join(clause_num.split(".")[:-1])
+                    # 2.x 패턴 탐색
+                    pattern = rf'\n({re.escape(base_num)}\.\d+)\s+'
+                    parts = re.split(pattern, "\n" + content)
                     
-                    section["headers"] = {f"H{h_level}": full_title}
-                    section["header_path"] = full_title
-                    # 상위 경로가 있다면 더 보강 가능하겠으나 현재는 이정도면 충분
+                    if len(parts) > 1:
+                        # 첫 번째 파트는 원래 조항의 내용
+                        content = parts[0].strip()
+                        # 이후 파트들은 번호, 내용, 번호, 내용... 순서임
+                        for j in range(1, len(parts), 2):
+                            s_num = parts[j]
+                            s_content = parts[j+1].strip() if j+1 < len(parts) else ""
+                            sub_sections.append({
+                                "clause": s_num,
+                                "title": f"조항 {s_num}",
+                                "content": s_content,
+                                "level": level,
+                                "is_sub_split": True
+                            })
+
+                # [Normalization] 헤더 구조 보정
+                h_level = min(6, level + 1)
+                full_title = f"{clause_num} {title}".strip() if clause_num else title
                 
-            state["sections"] = sections
-            print(f"   ✅ [Split] {len(sections)}개의 개별 조항이 추출되었습니다.")
-            return state
+                sections.append({
+                    "clause": clause_num,
+                    "title": title,
+                    "content": content,
+                    "level": level,
+                    "page": 1,
+                    "headers": {f"H{h_level}": full_title},
+                    "header_path": full_title,
+                    "pattern": "ai_led_mapping"
+                })
+
+                # 서브 섹션들 추가
+                for ss in sub_sections:
+                    ss_full_title = f"{ss['clause']} {ss['title']}"
+                    sections.append({
+                        "clause": ss["clause"],
+                        "title": ss["title"],
+                        "content": ss["content"],
+                        "level": ss["level"],
+                        "page": 1,
+                        "headers": {f"H{h_level}": ss_full_title},
+                        "header_path": ss_full_title,
+                        "pattern": "ai_led_sub_split"
+                    })
+            
+            if sections:
+                # 계층 구조 보완 (부모 찾기)
+                for i, sec in enumerate(sections):
+                    if i > 0:
+                        # 자신보다 레벨이 한 단계 낮은 가장 가까운 이전 섹션을 부모로 지정
+                        for j in range(i-1, -1, -1):
+                            if sections[j]["level"] < sec["level"]:
+                                sec["parent"] = sections[j]["clause"]
+                                break
+                                
+                state["sections"] = sections
+                print(f"   ✅ [Split] AI 지도를 기반으로 {len(sections)}개의 조항을 정밀하게 분할했습니다.")
+                return state
+
+    # [Fallback] AI 실패 시 헤더(#) 기반 분할
+    print("   📋 [Fallback] 헤더(#) 기호 기반으로 분할합니다.")
+    # ... (기존 로직 유지)
 
     # 3. 헤더 기반 파싱 (폴백)
     lines = effective_markdown.split('\n')
@@ -821,12 +926,14 @@ def node_optimize(state: PipelineState) -> PipelineState:
                 clause_level = l
                 break
         
-        # 조항 번호 및 제목 추출
-        current_section_title = headers.get(f"H{clause_level}") or "Untitled"
-        clause_id = None
-        num_match = re.search(r'([제]?\d+(?:\.\d+)*[조]?)', current_section_title)
-        if num_match:
-            clause_id = num_match.group(1)
+        # 조항 번호 및 제목 추출 (파이프라인에서 이미 추출된 것이 있다면 우선 사용)
+        current_section_title = section.get("title") or headers.get(f"H{clause_level}") or "Untitled"
+        clause_id = section.get("clause")
+        
+        if not clause_id:
+            num_match = re.search(r'([제]?\d+(?:\.\d+)*[조]?)', current_section_title)
+            if num_match:
+                clause_id = num_match.group(1)
             
         # 상위 섹션 번호 유추 (5.1.2 -> 5)
         main_section = clause_id.split('.')[0] if clause_id and '.' in clause_id else clause_id
@@ -840,9 +947,15 @@ def node_optimize(state: PipelineState) -> PipelineState:
         # 🔥 조항별 상세 메타데이터 추출 (AI) - 순차 처리로 복구
         # 제목이 있고, 조항 번호가 있으며, 본문이 100자 이상인 경우에만 분석
         clause_meta = {}
+        section_idx = sections.index(section) + 1
+        
         if use_llm_metadata and current_section_title != "Untitled" and clause_id and len(content.strip()) > 100:
-            print(f"   🔎 [{sections.index(section)+1}/{len(sections)}] 조항 분석 중: {current_section_title}")
+            print(f"   🔎 [{section_idx}/{len(sections)}] 조항 분석 중: {current_section_title}")
             clause_meta = extract_clause_metadata(content, doc_meta, current_section_title)
+        else:
+            # AI 분석 스킵하는 경우도 로그에 표시 (짧은 조항)
+            if clause_id:
+                print(f"   📋 [{section_idx}/{len(sections)}] 조항 저장: {clause_id} {current_section_title[:30] if current_section_title else ''}...")
 
         section["clause_meta"] = clause_meta
         idx += 1 # 🔥 다음 섹션을 위해 인덱스 증가 (누락 방지)
@@ -1210,6 +1323,83 @@ def _docx_fallback_extract(content: bytes) -> str:
         return ""
 
 
+def _clean_noise_globally(markdown: str) -> str:
+    """
+    전체 문서에서 반복되는 SOP 헤더, 푸터, 메타데이터 블록을 제거합니다.
+    (V22.12 Global Filter - 문서 끝부분 제거 추가)
+    """
+    if not markdown:
+        return ""
+    
+    # 🔥 [V22.12] 문서 끝부분 감지 및 제거 (개정이력, 승인정보)
+    end_markers = [
+        '문서개정이력',
+        'Document Revision History',
+        'Document Approvals',
+        '***END OF DOCUMENT***',
+    ]
+    
+    # 문서 끝부분 시작 위치 찾기
+    end_pos = len(markdown)
+    for marker in end_markers:
+        idx = markdown.find(marker)
+        if idx > 0 and idx < end_pos:
+            end_pos = idx
+    
+    # 문서 끝부분 제거 (본문만 유지)
+    if end_pos < len(markdown):
+        markdown = markdown[:end_pos].strip()
+        
+    lines = markdown.split('\n')
+    cleaned_lines = []
+    
+    # 제거할 패턴들 (대소문자 무시)
+    noise_patterns = [
+        r'^Number:\s*EQ-SOP-\d+.*',
+        r'^Version:\s*\d+\.\d+.*',
+        r'^Effective Date:\s*\d{4}-\d{2}-\d{2}.*',
+        r'^Owning Department\s*.*',
+        r'^Title\s*.*',
+        r'^\d+\s+of\s+\d+$', # 페이지 번호 (예: 1 of 11)
+        r'^\*\*\*END OF DOCUMENT\*\*\*$',
+    ]
+    
+    # 문서 제목 중복 제거를 위한 추적 (첫 3줄 정도에서 제목 추출 시도)
+    doc_title = None
+    for i in range(min(10, len(lines))):
+        line = lines[i].strip()
+        if line and not any(re.match(p, line, re.I) for p in noise_patterns) and not line.startswith('#') and not line.startswith('<!--'):
+            doc_title = line
+            break
+            
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            cleaned_lines.append(line)
+            continue
+            
+        # 1. 명시적 노이즈 패턴 체크
+        is_noise = False
+        for pattern in noise_patterns:
+            if re.match(pattern, stripped, re.I):
+                is_noise = True
+                break
+        
+        if is_noise:
+            continue
+            
+        # 2. 반복되는 문서 제목 체크 (메타데이터 근처에 있는 경우)
+        if doc_title and stripped == doc_title:
+            # 첫 번째 제목은 유지, 나머지는 제거 (단, 헤더 # 가 붙어있지 않은 경우만)
+            # (보통 상단 표 안에 제목이 반복되므로 이를 제거하는 목적)
+            if cleaned_lines.count(line) > 0 and not line.startswith('#'):
+                continue
+                
+        cleaned_lines.append(line)
+        
+    return '\n'.join(cleaned_lines)
+
+
 def _table_to_markdown(table) -> str:
     """Word 테이블 → Markdown"""
     rows = []
@@ -1232,7 +1422,7 @@ def _table_to_markdown(table) -> str:
 
 
 def _infer_headers(markdown: str) -> str:
-    """헤더 추론 삽입 (PDF용 강화)"""
+    """헤더 추론 삽입 (PDF용 강화) - V22.11"""
     lines = markdown.split('\n')
     result = []
     
@@ -1256,6 +1446,11 @@ def _infer_headers(markdown: str) -> str:
             result.append(line)
             continue
         
+        # 이미 마크다운 헤더가 붙어있으면 스킵
+        if stripped.startswith('#'):
+            result.append(line)
+            continue
+        
         # 무시 패턴 체크 (헤더로 안 만들고 텍스트 유지)
         should_ignore = False
         for pattern in ignore_patterns:
@@ -1267,41 +1462,50 @@ def _infer_headers(markdown: str) -> str:
             result.append(line)
             continue
         
-        # 1. 숫자형 헤더 패턴
-        # 5.1.2.1 xxx → H5 (글자 수 제한 강화: 40자)
-        if re.match(r'^(\d+\.\d+\.\d+\.\d+)\s*(.+)', stripped) and len(stripped) < 40:
+        # 1. 숫자형 헤더 패턴 (V22.11: 공백 또는 탭 허용, 더 유연하게)
+        # 5.1.2.1.1 xxx → H6
+        if re.match(r'^(\d+\.\d+\.\d+\.\d+\.\d+)\s*(.+)', stripped):
+            result.append(f"###### {stripped}")
+            continue
+        
+        # 5.1.2.1 xxx → H5
+        if re.match(r'^(\d+\.\d+\.\d+\.\d+)\s*(.+)', stripped):
             result.append(f"##### {stripped}")
             continue
         
         # 5.1.1 xxx → H4
-        if re.match(r'^(\d+\.\d+\.\d+)\s+(.+)', stripped) and len(stripped) < 40:
+        if re.match(r'^(\d+\.\d+\.\d+)\s*(.+)', stripped):
             result.append(f"#### {stripped}")
             continue
         
-        # 5.1 xxx → H3 (글자 수 제한 강화: 40자)
-        if re.match(r'^(\d+\.\d+)\s+(.+)', stripped) and len(stripped) < 40:
+        # 5.1 xxx → H3 (조항 번호 뒤에 바로 한글/영문이 오는 경우도 허용)
+        if re.match(r'^(\d+\.\d+)\s*([가-힣A-Za-z].+)', stripped):
             result.append(f"### {stripped}")
             continue
         
-        # 5 xxx → H2
+        # 5 xxx → H2 (단, "X of Y" 같은 페이지 번호 제외)
         match = re.match(r'^(\d+)\s+([가-힣A-Za-z].+)', stripped)
         if match:
             num = match.group(1)
             text = match.group(2)
-            if not re.match(r'^of\s+\d+', text, re.IGNORECASE) and len(stripped) < 40:
+            if not re.match(r'^of\s+\d+', text, re.IGNORECASE):
                 result.append(f"## {stripped}")
                 continue
         
-        # 2. 주요 섹션 키워드 → H2
+        # 2. 주요 섹션 키워드 → H2 (V22.11: 숫자로 시작하는 경우에만 허용)
+        # "목적으로 한다" 같은 일반 문장 방어
         matched = False
         for section in main_sections:
-            if stripped.startswith(section) and len(stripped) < 50:
+            # 🔥 [핵심] 숫자+공백+키워드 형태만 헤더로 인정 (예: "1 목적")
+            # 순수 키워드만 있는 경우는 이미 위에서 "5 xxx" 패턴으로 처리됨
+            pattern = rf'^(\d+)\s+{re.escape(section)}(\s+|:|$)'
+            if re.match(pattern, stripped) and len(stripped) < 50:
                 result.append(f"## {stripped}")
                 matched = True
                 break
         
         if not matched:
-            # 3. 소제목 패턴 → H3
+            # 3. 소제목 패턴 → H3 (한글 제목 + 영문 괄호)
             if re.match(r'^[가-힣][가-힣\s\(\)/·\-]+\s*\([A-Za-z\s&/\-:]+\)\s*$', stripped):
                 result.append(f"### {stripped}")
             else:
