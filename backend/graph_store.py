@@ -304,31 +304,40 @@ class Neo4jGraphStore:
                 """, section=section_id, doc=doc_id)
 
     def get_document_references(self, doc_id: str) -> Dict:
-        """문서 참조 관계 (MENTIONS 기반)"""
+        """문서 참조 관계 (REFERENCES 및 MENTIONS 통합)"""
         with self.driver.session(database=self.database) as session:
             result = session.run("""
                 MATCH (d:Document {doc_id: $doc_id})
 
-                // 이 문서의 섹션들이 MENTIONS하는 문서들
-                OPTIONAL MATCH (d)-[:HAS_SECTION]->(s:Section)-[:MENTIONS]->(ref:Document)
+                // 1. 직접 참조 (Document -REFERENCES-> Document)
+                OPTIONAL MATCH (d)-[:REFERENCES]->(ref_doc:Document)
 
-                // 다른 문서의 섹션들이 이 문서를 MENTIONS하는 경우
+                // 2. 조항 기반 참조 (Document -HAS_SECTION-> Section -MENTIONS-> Document)
+                OPTIONAL MATCH (d)-[:HAS_SECTION]->(s:Section)-[:MENTIONS]->(m_ref:Document)
+
+                // 3. 나를 참조하는 문서 (Document -REFERENCES-> d)
+                OPTIONAL MATCH (citing_doc:Document)-[:REFERENCES]->(d)
+
+                // 4. 나를 언급하는 섹션이 있는 문서 (Document -HAS_SECTION-> Section -MENTIONS-> d)
                 OPTIONAL MATCH (citing_section:Section)-[:MENTIONS]->(d)
-                OPTIONAL MATCH (citing_doc:Document)-[:HAS_SECTION]->(citing_section)
+                OPTIONAL MATCH (citing_doc_by_mention:Document)-[:HAS_SECTION]->(citing_section)
 
                 RETURN d,
-                       collect(DISTINCT ref.doc_id) as references,
-                       collect(DISTINCT citing_doc.doc_id) as cited_by
+                       collect(DISTINCT ref_doc.doc_id) as direct_refs,
+                       collect(DISTINCT m_ref.doc_id) as mention_refs,
+                       collect(DISTINCT citing_doc.doc_id) as cited_by_direct,
+                       collect(DISTINCT citing_doc_by_mention.doc_id) as cited_by_mention
             """, doc_id=doc_id)
             record = result.single()
             if record:
-                # null 값 제거
-                references = [r for r in record["references"] if r]
-                cited_by = [c for c in record["cited_by"] if c]
+                # 합집합 처리 및 None 제거
+                all_refs = list(set([r for r in record["direct_refs"] + record["mention_refs"] if r]))
+                all_cited_by = list(set([c for c in record["cited_by_direct"] + record["cited_by_mention"] if c]))
+                
                 return {
                     "document": dict(record["d"]),
-                    "references": references,
-                    "cited_by": cited_by
+                    "references": [r for r in all_refs if r != doc_id],
+                    "cited_by": [c for c in all_cited_by if c != doc_id]
                 }
             return None
 
@@ -530,8 +539,8 @@ def upload_document_to_graph(graph: Neo4jGraphStore, result: dict, filename: str
 
         # 타 문서/조항 언급 추출
         content = chunk.get("text", "")
-        # 문서 ID 패턴 (EQ-SOP-00009, EQ-WI-00012 등)
-        doc_mentions = re.findall(r'(EQ-[A-Z]+-\d{5})', content, re.IGNORECASE)
+        # 문서 ID 패턴 (EQ-SOP-00009, EQ-WI-00012 등) - \d+ 로 모든 자리 대응
+        doc_mentions = re.findall(r'(EQ-[A-Z]+-\d+)', content, re.IGNORECASE)
         if doc_mentions:
             graph.link_section_mentions(section_id, list(set(doc_mentions)))
 

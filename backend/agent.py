@@ -42,7 +42,40 @@ try:
 except ImportError:
     LANGCHAIN_AVAILABLE = False
     LANGGRAPH_AGENT_AVAILABLE = False
-    pass
+# ═══════════════════════════════════════════════════════════════════════════
+# 유틸리티: 안전한 파싱 및 정규화
+# ═══════════════════════════════════════════════════════════════════════════
+
+def safe_json_loads(text: str) -> dict:
+    """마크다운 태그나 트레일링 콤마가 포함된 LLM의 JSON 응답을 안전하게 파싱"""
+    if not text: return {}
+    if isinstance(text, dict): return text
+    
+    try:
+        # 1. 마크다운 코드 블록 제거 (사용자 제안 로직 반영)
+        clean_text = re.sub(r'^```(?:json)?\s*', '', text.strip())
+        clean_text = re.sub(r'\s*```$', '', clean_text.strip())
+        
+        # 2. 트레일링 콤마 제거
+        clean_text = re.sub(r',\s*}', '}', clean_text)
+        
+        return json.loads(clean_text)
+    except:
+        # 정규식으로 핵심 필드 추출 시도 (최후의 수단)
+        res = {}
+        for key in ["doc_id", "target_clause", "intent", "next_action", "plan", "mode"]:
+            match = re.search(f'"{key}"\s*:\s*"([^"]+)"', text)
+            if match: res[key] = match.group(1)
+        return res
+
+def normalize_doc_id(text: Optional[str]) -> Optional[str]:
+    """오타가 섞인 ID(eEQ-SOP-00009)를 정규화하여 실제 ID를 반환"""
+    if not text: return None
+    # SOP-00000 또는 SOP-000 형식 추출
+    match = re.search(r'([A-Z0-9]+-SOP-\d+)', text.upper())
+    if match:
+        return match.group(1)
+    return text.upper()
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 전역 스토어 및 클라이언트
@@ -201,10 +234,36 @@ def compare_versions_tool(doc_id: str, v1: str, v2: str) -> str:
 @tool
 def get_references_tool(doc_id: str) -> str:
     """참조 관계 조회"""
+    import json
+    from datetime import datetime
+
     global _graph_store
-    if not _graph_store: return ""
+    print(f"[DEBUG get_references_tool] doc_id={doc_id}, _graph_store={_graph_store}")
+    if not _graph_store:
+        print(f"[DEBUG get_references_tool] _graph_store is None, returning empty string")
+        return ""
+
     refs = _graph_store.get_document_references(doc_id)
-    return str(refs)
+    print(f"[DEBUG get_references_tool] refs type={type(refs)}, refs={refs}")
+
+    if not refs:
+        return ""
+
+    # Neo4j DateTime 객체를 문자열로 변환
+    def serialize_neo4j(obj):
+        if hasattr(obj, 'to_native'):  # Neo4j DateTime
+            return obj.to_native().isoformat()
+        elif isinstance(obj, dict):
+            return {k: serialize_neo4j(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [serialize_neo4j(item) for item in obj]
+        else:
+            return obj
+
+    refs_serialized = serialize_neo4j(refs)
+    result = json.dumps(refs_serialized, ensure_ascii=False)
+    print(f"[DEBUG get_references_tool] serialized result: {result[:200]}...")
+    return result
 
 @tool
 def get_sop_headers_tool(doc_id: str) -> str:
@@ -305,19 +364,28 @@ def orchestrator_node(state: AgentState):
             response_format={"type": "json_object"}
         )
         content = response.choices[0].message.content
-        decision = json.loads(content)
+        decision = safe_json_loads(content)
         
         next_action = decision.get("next_action", "finish")
         
         # 만약 finish라면 최종 답변 생성
         if next_action == "finish":
-            # 마지막 서브 에이전트의 보고를 그대로 사용하거나, 히스토리에서 답변 추출
-            last_message = messages[-1]["content"] if messages else "답변을 준비하지 못했습니다."
+            # 마지막 서브 에이전트의 보고를 그대로 사용 (Pass-through)
+            last_msg_content = ""
+            for msg in reversed(messages):
+                if hasattr(msg, "role") and msg.role == "assistant":
+                    last_msg_content = msg.content
+                    break
+                elif isinstance(msg, dict) and msg.get("role") == "assistant":
+                    last_msg_content = msg.get("content", "")
+                    break
+            
+            if not last_msg_content:
+                last_msg_content = "답변을 준비하지 못했습니다."
 
-            # [DONE] 태그 제거나 깔끔한 마무리 (필요 시)
-            clean_answer = last_message.replace("[DONE]", "").strip()
-            # 만약 보고 형식([검색 에이전트 보고] 등)이 있다면 그대로 노출하거나 정리 가능
-
+            # [DONE] 태그 제거나 깔끔한 마무리
+            clean_answer = last_msg_content.replace("[DONE]", "").strip()
+            
             return {"next_agent": "end", "final_answer": clean_answer}
             
         return {"next_agent": next_action}
@@ -364,18 +432,31 @@ def comparison_agent_node(state: AgentState):
 # ═══════════════════════════════════════════════════════════════════════════
 
 def create_workflow():
-    from backend.sub_agent.summary import summary_agent_node
-    from backend.sub_agent.graph import graph_agent_node
-    from backend.sub_agent.search import retrieval_agent_node as search_agent_node
+    # 서브 에이전트 노드들을 지연 임포트하여 순환 참조(Circular Import) 방지
+    try:
+        from backend.sub_agent.search import retrieval_agent_node as node_retrieval
+        from backend.sub_agent.summary import summary_agent_node as node_summary
+        from backend.sub_agent.graph import graph_agent_node as node_graph
+        node_comparison = comparison_agent_node # 모듈 수준 함수 할당
+    except ImportError as e:
+        error_msg = str(e)
+        print(f" 서브 에이전트 로드 실패: {error_msg}")
+        # 실패 시 기본 핸들러 정의 (에러 메시지 반환)
+        def error_node(state): return {"messages": [{"role": "assistant", "content": f"에이전트 로딩 에러: {error_msg}"}]}
+        node_retrieval = error_node
+        node_summary = error_node
+        node_comparison = error_node
+        node_graph = error_node
+
     workflow = StateGraph(AgentState)
 
 
     # Nodes
     workflow.add_node("orchestrator", orchestrator_node)
-    workflow.add_node("retrieval", search_agent_node)  # 딥 검색 에이전트 사용
-    workflow.add_node("summary", summary_agent_node)
-    workflow.add_node("comparison", comparison_agent_node)
-    workflow.add_node("graph", graph_agent_node)
+    workflow.add_node("retrieval", node_retrieval)
+    workflow.add_node("summary", node_summary)
+    workflow.add_node("comparison", node_comparison)
+    workflow.add_node("graph", node_graph)
     
     # Edges
     workflow.add_edge(START, "orchestrator")

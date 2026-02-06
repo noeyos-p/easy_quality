@@ -1,7 +1,7 @@
 import re
 import json
 import ast
-from backend.agent import get_zai_client, get_references_tool, AgentState
+from backend.agent import get_zai_client, get_references_tool, AgentState, safe_json_loads, normalize_doc_id
 
 
 # Graph Agent를 고도화하여 다음과 같은 기능을 추가했습니다.
@@ -60,19 +60,20 @@ def graph_agent_node(state: AgentState):
             messages=[{"role": "system", "content": "당신은 대화 맥락을 파석하여 엔티티를 추출하는 전문가입니다."}] + messages + [{"role": "user", "content": extraction_prompt}],
             response_format={"type": "json_object"}
         )
-        info = json.loads(extraction_res.choices[0].message.content)
-        doc_id = info.get("doc_id")
+        # safe_json_loads를 통한 강인한 파싱
+        info = safe_json_loads(extraction_res.choices[0].message.content)
+        doc_id = normalize_doc_id(info.get("doc_id")) # 정규화 적용
         intent = info.get("intent", "general_info")
     except:
         # 추출 실패 시 정규식 보조
-        match = re.search(r'([A-Z]{2}-SOP-\d+)', query.upper())
-        doc_id = match.group(1) if match else None
+        raw_match = re.search(r'([A-Za-z0-9_-]*SOP-\d+)', query.upper())
+        doc_id = normalize_doc_id(raw_match.group(1)) if raw_match else None
         intent = "general_info"
     
     if not doc_id:
         # SOP-로 시작하지 않는 문서명인 경우 다시 한번 시도
-        match = re.search(r'([A-Za-z0-9_-]+SOP[A-Za-z0-9_-]+)', query.upper())
-        doc_id = match.group(1) if match else None
+        raw_match = re.search(r'([A-Za-z0-9_-]+SOP[A-Za-z0-9_-]+)', query.upper())
+        doc_id = normalize_doc_id(raw_match.group(1)) if raw_match else None
         
     if not doc_id:
         return {"messages": [{"role": "assistant", "content": "[그래프 에이전트] 분석할 문서 ID를 찾지 못했습니다. (예: SOP-001 관계 분석해줘)"}]}
@@ -83,9 +84,9 @@ def graph_agent_node(state: AgentState):
     if not refs_str or refs_str == "None":
         return {"messages": [{"role": "assistant", "content": f"[그래프 에이전트] {doc_id}에 대한 참조 데이터가 존재하지 않습니다."}]}
 
-    try:
-        ref_data = ast.literal_eval(refs_str)
-    except:
+    # safe_json_loads를 통한 강인한 파싱
+    ref_data = safe_json_loads(refs_str)
+    if not ref_data:
         ref_data = {"document": {"doc_id": doc_id}, "references": [], "cited_by": []}
 
     # 3. 시각화 (Mermaid) 생성
