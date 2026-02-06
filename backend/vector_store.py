@@ -280,13 +280,14 @@ def ensure_collection(client: weaviate.WeaviateClient, collection_name: str):
                 wvc.config.Property(name="metadata_json", data_type=wvc.config.DataType.TEXT),
                 wvc.config.Property(name="doc_name", data_type=wvc.config.DataType.TEXT),
                 wvc.config.Property(name="doc_id", data_type=wvc.config.DataType.TEXT),
+                wvc.config.Property(name="clause", data_type=wvc.config.DataType.TEXT),  # 추가: 조항 번호
+                wvc.config.Property(name="title", data_type=wvc.config.DataType.TEXT),   # 추가: 조항 제목
                 wvc.config.Property(name="model", data_type=wvc.config.DataType.TEXT),
             ],
-            # v4.4+ 에서는 vector_config 사용 권장
-            vector_config=wvc.config.Configure.Vector.none(
-                vector_index_config=wvc.config.Configure.VectorIndex.hnsw(
-                    distance_metric=wvc.config.VectorDistances.COSINE
-                )
+            # v4.4+ 에서는 vector_config 사용 권장하나, 단일 벡터 설정 시 경고가 발생할 수 있음
+            vectorizer_config=wvc.config.Configure.Vectorizer.none(),
+            vector_index_config=wvc.config.Configure.VectorIndex.hnsw(
+                distance_metric=wvc.config.VectorDistances.COSINE
             )
         )
         print(f"🟢 Weaviate v4 Collection 생성됨: {collection_name}")
@@ -321,6 +322,8 @@ def add_documents(
                     "metadata_json": json.dumps(meta),
                     "doc_name": str(meta.get("doc_name", "")),
                     "doc_id": str(meta.get("doc_id", "")),
+                    "clause": str(meta.get("clause_id") or meta.get("clause", "")), # 추가
+                    "title": str(meta.get("title", "")), # 추가
                     "model": model_name
                 },
                 vector=vector

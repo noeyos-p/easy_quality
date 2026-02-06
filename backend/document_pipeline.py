@@ -434,14 +434,14 @@ def create_chunks(clauses: List[Dict], doc_id: str, doc_title: str,
             meta = _default_metadata()
 
         # 2. 긴 조항 재분할 (벡터 검색 품질 향상)
-        text_to_split = f"{title}\n{content}"
+        # v8.3: 사용자의 요청에 따라 text 필드에는 순수 본문(content)만 포함
+        text_to_split = content
         split_parts = _split_recursive(text_to_split, chunk_size, chunk_overlap)
         
         for p_idx, part in enumerate(split_parts):
-            # 벡터 검색에서 문맥을 강화하기 위해 제목을 조상 텍스트에 포함
-            # prefix format: [문서명 > 조항제목]
-            context_prefix = f"[{doc_title} > {clause_id} {title}]\n"
-            chunk_text = context_prefix + part
+            # v8.3: 필드 분리에 따라 text 필드에서는 중복된 제목 프리픽스 제거 (본문 중심 임베딩)
+            # 검색 엔진 레벨에서 clause, title 필드를 별도로 활용하므로 text는 순수 본문 위주로 구성
+            chunk_text = part
             
             # 최종 메타데이터
             full_meta = {
@@ -576,6 +576,6 @@ if __name__ == "__main__":
     )
 
     if result["success"]:
-        print(f"\n✅ 성공!")
+        print(f"\n🟢 성공!")
     else:
-        print(f"\n❌ 실패: {result['errors']}")
+        print(f"\n🔴 실패: {result['errors']}")
