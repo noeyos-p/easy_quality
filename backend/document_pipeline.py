@@ -576,6 +576,6 @@ if __name__ == "__main__":
     )
 
     if result["success"]:
-        print(f"\n✅ 성공!")
+        print(f"\n🟢 성공!")
     else:
-        print(f"\n❌ 실패: {result['errors']}")
+        print(f"\n🔴 실패: {result['errors']}")

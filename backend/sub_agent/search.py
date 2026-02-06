@@ -376,7 +376,7 @@ def call_model_node(state: SearchState):
     2. 세부적인 작업 방법보다는 기본적인 지침과 관리 기준을 제시합니다
 
     [DONE]
-
+    
     [STRICT PROHIBITIONS]
     - DO NOT create [참고 문서] section in the middle or end of your answer (auto-generated from [USE: ...] tags)
     - DO NOT cite sources inline like "[문서명 조항]" in visible text
