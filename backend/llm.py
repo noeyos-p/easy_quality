@@ -45,8 +45,8 @@ class OpenAILLM:
     ) -> str:
         """OpenAI API를 사용하여 응답 생성"""
         if not self.api_key:
-            print("⚠️ OPENAI_API_KEY가 설정되지 않았습니다. .env 파일을 확인하세요.")
-            return "❌ 오류: OPENAI_API_KEY가 설정되지 않았습니다."
+            print(" OPENAI_API_KEY가 설정되지 않았습니다. .env 파일을 확인하세요.")
+            return " 오류: OPENAI_API_KEY가 설정되지 않았습니다."
 
         client = self._get_client()
         
@@ -56,7 +56,7 @@ class OpenAILLM:
                 messages.append({"role": "system", "content": system})
             messages.append({"role": "user", "content": prompt})
 
-            # print(f"🚀 OpenAI API 호출 중... (모델: {self.model})")
+            # print(f" OpenAI API 호출 중... (모델: {self.model})")
             
             response = client.chat.completions.create(
                 model=self.model,
@@ -68,8 +68,8 @@ class OpenAILLM:
             return response.choices[0].message.content or ""
 
         except Exception as e:
-            print(f"❌ OpenAI 호출 오류: {e}")
-            return f"❌ OpenAI 호출 오류: {str(e)}"
+            print(f" OpenAI 호출 오류: {e}")
+            return f" OpenAI 호출 오류: {str(e)}"
 
     def generate_stream(
         self,
@@ -130,13 +130,13 @@ class ZaiLLM:
         prompt: str,
         system: str = None,
         temperature: float = 0.7,
-        max_tokens: int = 2048  # 🔥 기본 토큰 상향
+        max_tokens: int = 2048  #  기본 토큰 상향
     ) -> str:
         """Z.AI API를 사용하여 응답 생성 (재시도 로직 포함)"""
         # API 키 확인
         if not self.api_key or "your-api-key" in self.api_key:
-            print("⚠️ ZAI_API_KEY가 설정되지 않았거나 기본값입니다. .env 파일을 확인하세요.")
-            return "❌ 오류: ZAI_API_KEY가 설정되지 않았습니다. .env 파일에 실제 API 키를 입력해주세요."
+            print(" ZAI_API_KEY가 설정되지 않았거나 기본값입니다. .env 파일을 확인하세요.")
+            return " 오류: ZAI_API_KEY가 설정되지 않았습니다. .env 파일에 실제 API 키를 입력해주세요."
 
         client = self._get_client()
         
@@ -150,7 +150,7 @@ class ZaiLLM:
                     messages.append({"role": "system", "content": system})
                 messages.append({"role": "user", "content": prompt})
 
-                print(f"🚀 Z.AI API 호출 중... (모델: {self.model}, MaxTokens: {max_tokens}, 시도: {attempt+1})")
+                print(f" Z.AI API 호출 중... (모델: {self.model}, MaxTokens: {max_tokens}, 시도: {attempt+1})")
                 
                 response = client.chat.completions.create(
                     model=self.model,
@@ -160,8 +160,8 @@ class ZaiLLM:
                 )
                 
                 if not response.choices:
-                    print(f"⚠️ Z.AI 응답에 choices가 없습니다: {response}")
-                    return "❌ 오류: Z.AI로부터 적절한 응답을 받지 못했습니다."
+                    print(f" Z.AI 응답에 choices가 없습니다: {response}")
+                    return " 오류: Z.AI로부터 적절한 응답을 받지 못했습니다."
                     
                 msg_obj = response.choices[0].message
                 content = getattr(msg_obj, 'content', "") or ""
@@ -169,21 +169,21 @@ class ZaiLLM:
                 
                 # 본문(content)이 비어있는데 reasoning_content만 있는 경우
                 if not content and reasoning:
-                    # 🔥 방법 1: 완전한 JSON 블록 찾기 ({ ... })
+                    #  방법 1: 완전한 JSON 블록 찾기 ({ ... })
                     json_match = re.search(r'(\{.*\})', reasoning, re.DOTALL)
                     if json_match:
                         content = json_match.group(1)
-                        print(f"✅ [Recall] Reasoning에서 완전한 JSON 복구 ({len(content)}자)")
+                        print(f" [Recall] Reasoning에서 완전한 JSON 복구 ({len(content)}자)")
                     else:
-                        # 🔥 방법 2: 잘린 JSON이라도 시작 부분이라도 찾기
+                        #  방법 2: 잘린 JSON이라도 시작 부분이라도 찾기
                         start_idx = reasoning.find('{')
                         if start_idx != -1:
                             content = reasoning[start_idx:]
                             if not content.strip().endswith('}'):
                                 content = content.strip() + '"}'
-                            print(f"⚠️ [Recall] 잘린 JSON 강제 복구 시도")
+                            print(f" [Recall] 잘린 JSON 강제 복구 시도")
                         else:
-                            content = "❌ 답변 생성 중 토큰 한도에 도달했습니다."
+                            content = " 답변 생성 중 토큰 한도에 도달했습니다."
                 
                 return content
 
@@ -193,14 +193,14 @@ class ZaiLLM:
                 if "429" in error_msg or "1302" in error_msg or "Rate limit" in error_msg or "too many" in error_msg.lower():
                     # 지수 백오프 + 지터 (서버 부하 분산)
                     delay = (base_delay * (2 ** attempt)) + random.uniform(1, 3)
-                    print(f"⚠️ API 한도 초과/과부하 감지. {delay:.1f}초 후 자동 재시도... ({attempt+1}/{max_retries})")
+                    print(f" API 한도 초과/과부하 감지. {delay:.1f}초 후 자동 재시도... ({attempt+1}/{max_retries})")
                     time.sleep(delay)
                     continue
                 else:
-                    print(f"❌ Z.AI 호출 오류: {e}")
-                    return f"❌ AI 호출 오류: {str(e)}"
+                    print(f" Z.AI 호출 오류: {e}")
+                    return f" AI 호출 오류: {str(e)}"
         
-        return "❌ 오류: 여러 번의 재시도 후에도 AI 응답을 받지 못했습니다. (API 할당량 초과)"
+        return " 오류: 여러 번의 재시도 후에도 AI 응답을 받지 못했습니다. (API 할당량 초과)"
 
     def generate_stream(
         self,
@@ -357,7 +357,7 @@ def load_llm(model_name: str):
 
     from transformers import AutoTokenizer, AutoModelForCausalLM
 
-    print(f"🤖 Loading LLM: {model_name}...")
+    print(f" Loading LLM: {model_name}...")
 
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
     dtype = torch.float16 if device == "cuda" else torch.float32
@@ -374,7 +374,7 @@ def load_llm(model_name: str):
     model.eval()
 
     _loaded_llm[model_name] = (tokenizer, model)
-    print(f"✅ Loaded: {model_name}")
+    print(f" Loaded: {model_name}")
     return tokenizer, model
 
 

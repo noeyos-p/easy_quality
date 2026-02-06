@@ -36,8 +36,8 @@ def planner_node(state: SummaryState):
     
     actual_headers = ""
     if doc_id:
-        actual_headers = get_sop_headers_tool.invoke({"sop_id": doc_id})
-        print(f"   📑 [Deep Summary] 실제 목차 파악 성공: {doc_id}")
+        actual_headers = get_sop_headers_tool.invoke({"doc_id": doc_id})
+        print(f"    [Deep Summary] 실제 목차 파악 성공: {doc_id}")
 
     # 2. 요약 모드 결정 및 계획 수립
     prompt = f"""사용자의 질문을 분석하여 요약 계획을 세우세요.
@@ -81,18 +81,18 @@ def worker_node(state: SummaryState):
     if not plan or state["summary_mode"] == "global":
         search_res = search_sop_tool.invoke({
             "query": f"{doc_id} {query}",
-            "target_sop_id": doc_id # 특정 문서로 한정
+            "target_doc_id": doc_id # 특정 문서로 한정
         })
         return {"full_context": [search_res], "current_step": step + 1}
     
     # 조항별 검색 (현재 스텝의 조항) - 정밀 타격
     target_clause = plan[step]
-    print(f"   🔍 [Deep Summary] {doc_id} {target_clause}조 본문 타격 중...")
+    print(f"    [Deep Summary] {doc_id} {target_clause}조 본문 타격 중...")
     
     search_query = f"{target_clause}"
     search_res = search_sop_tool.invoke({
         "query": search_query, 
-        "target_sop_id": doc_id, # 다른 문서 노이즈 차단
+        "target_doc_id": doc_id, # 다른 문서 노이즈 차단
         "keywords": [target_clause]
     })
     
@@ -176,7 +176,7 @@ def summary_agent_node(state: AgentState):
     if not _deep_summary_app:
         _deep_summary_app = create_deep_summary_graph()
         
-    print(f"🚀 [Deep Summary] 딥 에이전트 가동 시작: {state['query']}")
+    print(f" [Deep Summary] 딥 에이전트 가동 시작: {state['query']}")
     
     initial_summary_state = {
         "query": state["query"],

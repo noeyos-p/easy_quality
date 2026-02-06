@@ -16,6 +16,7 @@ from transformers import AutoTokenizer, AutoModel
 from dataclasses import dataclass
 import re
 import json
+import os
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -23,8 +24,9 @@ import json
 # ═══════════════════════════════════════════════════════════════════════════
 
 DEFAULT_COLLECTION = "documents"
-WEAVIATE_HOST = "192.168.0.79"
-WEAVIATE_PORT = 8080
+WEAVIATE_HOST = os.getenv("WEAVIATE_HOST", "192.168.0.79")
+WEAVIATE_PORT = int(os.getenv("WEAVIATE_PORT", "8080"))
+WEAVIATE_SCHEME = os.getenv("WEAVIATE_SCHEME", "http")
 
 # 검색 품질 설정
 DEFAULT_SIMILARITY_THRESHOLD = 0.35
@@ -99,57 +101,60 @@ def get_client() -> weaviate.WeaviateClient:
     """Weaviate v4 persistent client - ngrok 우선 (원격 팀원 지원)"""
     global _client
     if _client is None:
-        # ngrok 터널 URL
-        NGROK_HTTP_HOST = "angelique-nonpulmonary-britni.ngrok-free.dev"
-        NGROK_GRPC_HOST = "0.tcp.jp.ngrok.io"
-        NGROK_GRPC_PORT = 15979
+        # ngrok 설정 (환경변수에서 읽기)
+        GRPC_HOST = os.getenv("WEAVIATE_GRPC_HOST", "0.tcp.jp.ngrok.io")
+        GRPC_PORT = int(os.getenv("WEAVIATE_GRPC_PORT", "15979"))
 
         # 1. ngrok 터널 먼저 시도 (원격 접속 가능)
-        try:
-            from weaviate import WeaviateClient
-            from weaviate.connect import ConnectionParams
+        if WEAVIATE_SCHEME == "https":
+            try:
+                from weaviate import WeaviateClient
+                from weaviate.connect import ConnectionParams
 
-            connection_params = ConnectionParams.from_params(
-                http_host=NGROK_HTTP_HOST,
-                http_port=443,
-                http_secure=True,
-                grpc_host=NGROK_GRPC_HOST,
-                grpc_port=NGROK_GRPC_PORT,
-                grpc_secure=False  # TCP 터널은 TLS 없음
-            )
+                print(f" ngrok 터널 연결 시도 중...")
+                print(f"   HTTP: {WEAVIATE_HOST}:{WEAVIATE_PORT}")
+                print(f"   gRPC: {GRPC_HOST}:{GRPC_PORT}")
 
-            _client = WeaviateClient(
-                connection_params=connection_params,
-                skip_init_checks=True,
-                additional_config=wvc.init.AdditionalConfig(
-                    timeout=wvc.init.Timeout(init=30, query=60, insert=120)
-                ),
-                # ngrok "Visit Site" 인터스티셜 우회 헤더
-                additional_headers={
-                    "ngrok-skip-browser-warning": "true"
-                }
-            )
-            _client.connect()
-            _client.collections.list_all()
-            print(f"✅ Weaviate v4 연결 (ngrok - HTTP: {NGROK_HTTP_HOST}, gRPC: {NGROK_GRPC_HOST}:{NGROK_GRPC_PORT})")
-        except Exception as e:
-            print(f"⚠️ ngrok 연결 실패: {e}")
-            print(f"   로컬 연결 시도 중...")
+                connection_params = ConnectionParams.from_params(
+                    http_host=WEAVIATE_HOST,
+                    http_port=WEAVIATE_PORT,
+                    http_secure=True,
+                    grpc_host=GRPC_HOST,
+                    grpc_port=GRPC_PORT,
+                    grpc_secure=False
+                )
 
-            # 2. 로컬 폴백 (같은 네트워크인 경우)
+                _client = WeaviateClient(
+                    connection_params=connection_params,
+                    skip_init_checks=True,
+                    additional_config=wvc.init.AdditionalConfig(
+                        timeout=wvc.init.Timeout(init=30, query=60, insert=120)
+                    ),
+                    additional_headers={
+                        "ngrok-skip-browser-warning": "true"
+                    }
+                )
+                _client.connect()
+                _client.collections.list_all()
+                print(f" Weaviate v4 연결 (ngrok)")
+            except Exception as e:
+                print(f" ngrok 연결 실패: {e}")
+                raise
+        else:
+            # HTTP인 경우 로컬 연결
             try:
                 _client = weaviate.connect_to_local(
                     host=WEAVIATE_HOST,
                     port=WEAVIATE_PORT,
                     grpc_port=50051,
                     additional_config=wvc.init.AdditionalConfig(
-                        timeout=wvc.init.Timeout(init=5, query=60, insert=120)
+                        timeout=wvc.init.Timeout(init=10, query=60, insert=120)
                     )
                 )
                 _client.collections.list_all()
-                print(f"✅ Weaviate v4 로컬 연결 ({WEAVIATE_HOST}:{WEAVIATE_PORT})")
-            except Exception as e2:
-                print(f"❌ 모든 연결 실패: {e2}")
+                print(f" Weaviate v4 로컬 연결 ({WEAVIATE_HOST}:{WEAVIATE_PORT})")
+            except Exception as e:
+                print(f" 연결 실패: {e}")
                 raise
 
     if not _client.is_connected():
@@ -188,7 +193,7 @@ def get_embedding_model(model_name: str = "intfloat/multilingual-e5-small"):
     if model_name in _embed_models:
         return _embed_models[model_name]
 
-    print(f"📦 Loading embedding model: {model_name}...")
+    print(f" Loading embedding model: {model_name}...")
     device = get_device()
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
     model = AutoModel.from_pretrained(model_name, trust_remote_code=True).to(device)
@@ -258,9 +263,9 @@ def close_client():
     if _client is not None:
         try:
             _client.close()
-            print("🛑 Weaviate 연결 종료됨")
+            print(" Weaviate 연결 종료됨")
         except Exception as e:
-            print(f"⚠️ Weaviate 종료 중 오류: {e}")
+            print(f" Weaviate 종료 중 오류: {e}")
         finally:
             _client = None
 
@@ -274,7 +279,7 @@ def ensure_collection(client: weaviate.WeaviateClient, collection_name: str):
                 wvc.config.Property(name="text", data_type=wvc.config.DataType.TEXT),
                 wvc.config.Property(name="metadata_json", data_type=wvc.config.DataType.TEXT),
                 wvc.config.Property(name="doc_name", data_type=wvc.config.DataType.TEXT),
-                wvc.config.Property(name="sop_id", data_type=wvc.config.DataType.TEXT),
+                wvc.config.Property(name="doc_id", data_type=wvc.config.DataType.TEXT),
                 wvc.config.Property(name="model", data_type=wvc.config.DataType.TEXT),
             ],
             # v4.4+ 에서는 vector_config 사용 권장
@@ -284,7 +289,7 @@ def ensure_collection(client: weaviate.WeaviateClient, collection_name: str):
                 )
             )
         )
-        print(f"🆕 Weaviate v4 Collection 생성됨: {collection_name}")
+        print(f"🟢 Weaviate v4 Collection 생성됨: {collection_name}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -315,7 +320,7 @@ def add_documents(
                     "text": text,
                     "metadata_json": json.dumps(meta),
                     "doc_name": str(meta.get("doc_name", "")),
-                    "sop_id": str(meta.get("sop_id", "")),
+                    "doc_id": str(meta.get("doc_id", "")),
                     "model": model_name
                 },
                 vector=vector
@@ -324,9 +329,9 @@ def add_documents(
     
     # 배치 삽입
     res = collection.data.insert_many(data_objects)
-    
+
     if res.has_errors:
-        print(f"⚠️ 일부 데이터 삽입 실패: {res.errors}")
+        print(f"🔴 일부 데이터 삽입 실패: {res.errors}")
 
     return {
         "success": not res.has_errors,
@@ -468,7 +473,7 @@ def search_hybrid(
             })
         return search_results
     except Exception as e:
-        print(f"❌ Hybrid search failed: {e}")
+        print(f" Hybrid search failed: {e}")
         # Fallback to normal search
         return search(query, collection_name, n_results, model_name, filter_doc)
 
