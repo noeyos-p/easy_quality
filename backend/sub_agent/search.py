@@ -72,22 +72,12 @@ def _get_clause_and_doc_from_db(content: str, metadata: dict) -> tuple:
     if clause_id:
         clause_id = str(clause_id).strip()
 
-    # 조항 번호가 있고 유효하면 "조항번호 제목" 형식으로 반환
+    # 조항 번호가 있고 유효하면 조항 번호만 반환 (제목 제외)
     if clause_id and clause_id not in ["", "None", "null", "본문", "전체", "N/A"]:
-        title = metadata.get('title', '').strip()
-        # 제목이 너무 길면 앞 30자만
-        if title and len(title) > 30:
-            title = title[:30] + "..."
-        # "5.1.3 제목" 형식
-        if title:
-            # doc_name이 없으면 SQL에서 조회 시도
-            if not doc_name or doc_name in ["Unknown", "None", ""]:
-                doc_name = _try_get_doc_from_sql(content, _sql_store)
-            return (doc_name or "Unknown", f"{clause_id} {title}")
-        else:
-            if not doc_name or doc_name in ["Unknown", "None", ""]:
-                doc_name = _try_get_doc_from_sql(content, _sql_store)
-            return (doc_name or "Unknown", clause_id)
+        # doc_name이 없으면 SQL에서 조회 시도
+        if not doc_name or doc_name in ["Unknown", "None", ""]:
+            doc_name = _try_get_doc_from_sql(content, _sql_store)
+        return (doc_name or "Unknown", clause_id)
 
     # 3. SQL DB에서 content 기반으로 역으로 찾기
     if _sql_store:
