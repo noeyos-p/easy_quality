@@ -51,30 +51,45 @@ def _get_clause_and_doc_from_db(content: str, metadata: dict) -> tuple:
     """
     global _sql_store
 
-    # 1. metadata에서 먼저 확인 (우선순위: doc_id > doc_id > doc_name)
-    doc_name = metadata.get('doc_id') or metadata.get('doc_id') or metadata.get('doc_name')
+    # 1. 문서명 추출 (더 많은 키 확인)
+    doc_name = (
+        metadata.get('doc_id') or
+        metadata.get('doc_name') or
+        metadata.get('document_name') or
+        metadata.get('file_name') or
+        metadata.get('source')
+    )
 
-    # 조항 정보 확인 (우선순위: clause_id > clause > section > ...)
-    # "본문", "전체" 같은 의미 없는 값은 무시
-    invalid_clause_values = ["본문", "전체", "전문", "None", ""]
-    clause_keys = ['clause_id', 'clause', 'section', 'article', 'article_num', 'section_id', '조항']
-    
-    for key in clause_keys:
-        value = metadata.get(key)
-        if value and str(value).strip() not in invalid_clause_values:
-            clause = str(value)
-            
-            # [보정] CH형태의 기술적 ID나 너무 긴 ID는 제거 또는 정제
-            if re.search(r'CH\d+', clause) or len(clause) > 20:
-                # 제목(title)이 있다면 제목으로 대체 시도
-                title = metadata.get('title') or metadata.get('current_title')
-                if title:
-                    return (doc_name or "Unknown", title)
-                return (doc_name or "Unknown", "상세")
-                
-            return (doc_name or "Unknown", clause)
+    # 2. 조항 번호 우선 추출 (더 많은 키 확인)
+    clause_id = (
+        metadata.get('clause_id') or
+        metadata.get('clause') or
+        metadata.get('section') or
+        metadata.get('article_num') or
+        metadata.get('section_number')
+    )
 
-    # 2. SQL DB에서 content 기반으로 역으로 찾기
+    if clause_id:
+        clause_id = str(clause_id).strip()
+
+    # 조항 번호가 있고 유효하면 "조항번호 제목" 형식으로 반환
+    if clause_id and clause_id not in ["", "None", "null", "본문", "전체", "N/A"]:
+        title = metadata.get('title', '').strip()
+        # 제목이 너무 길면 앞 30자만
+        if title and len(title) > 30:
+            title = title[:30] + "..."
+        # "5.1.3 제목" 형식
+        if title:
+            # doc_name이 없으면 SQL에서 조회 시도
+            if not doc_name or doc_name in ["Unknown", "None", ""]:
+                doc_name = _try_get_doc_from_sql(content, _sql_store)
+            return (doc_name or "Unknown", f"{clause_id} {title}")
+        else:
+            if not doc_name or doc_name in ["Unknown", "None", ""]:
+                doc_name = _try_get_doc_from_sql(content, _sql_store)
+            return (doc_name or "Unknown", clause_id)
+
+    # 3. SQL DB에서 content 기반으로 역으로 찾기
     if _sql_store:
         try:
             # content의 고유한 부분 추출 (앞 100자)
@@ -92,13 +107,33 @@ def _get_clause_and_doc_from_db(content: str, metadata: dict) -> tuple:
                     # content 매칭 (포함 관계 확인)
                     if content_sample in chunk_content or chunk_content[:100] in content:
                         found_doc_name = doc.get('doc_name', 'Unknown')
-                        found_clause = chunk.get('clause') or '본문'
+                        found_clause = chunk.get('clause') or chunk.get('section') or '본문'
                         print(f"    [SQL 역조회] 발견: {found_doc_name} - {found_clause}")
                         return (found_doc_name, found_clause)
         except Exception as e:
-            print(f" SQL 역조회 실패: {e}")
+            print(f"    [SQL 역조회 실패] {e}")
 
-    return (doc_name or "Unknown", "본문")
+    # 최종 fallback
+    final_doc_name = doc_name or "Unknown"
+    print(f"    [경고] 문서명 또는 조항 정보 누락: doc={final_doc_name}, clause=본문")
+    return (final_doc_name, "본문")
+
+def _try_get_doc_from_sql(content: str, sql_store) -> str:
+    """SQL에서 content 기반으로 문서명만 조회"""
+    if not sql_store:
+        return None
+    try:
+        content_sample = content[:100].strip()
+        all_docs = sql_store.list_documents()
+        for doc in all_docs:
+            doc_id = doc.get('id')
+            chunks = sql_store.get_chunks_by_document(doc_id)
+            for chunk in chunks:
+                if content_sample in chunk.get('content', ''):
+                    return doc.get('doc_name', 'Unknown')
+    except:
+        pass
+    return None
 
 def search_documents_internal(
     query: str,
@@ -106,6 +141,7 @@ def search_documents_internal(
     search_type: Literal["hybrid", "vector", "keyword"] = "hybrid",
     keywords: List[str] = None,
     target_clause: str = None, # 조항 번호 직접 조회 (Point Lookup)
+    target_doc_id: str = None, # 특정 문서 필터링 (v8.1 추가)
 ) -> List[Dict[str, Any]]:
     """내부용 검색 실행 함수"""
     global _vector_store, _sql_store
@@ -153,9 +189,10 @@ def search_documents_internal(
 
             if search_type == "hybrid":
                 current_alpha = 0.25 if keywords else 0.4
-                vec_res = _vector_store.search_hybrid(enhanced_query, n_results=max_results * 2, alpha=current_alpha)
+                # v8.1: target_doc_id 필터 추가
+                vec_res = _vector_store.search_hybrid(enhanced_query, n_results=max_results * 2, alpha=current_alpha, filter_doc=target_doc_id)
             else:
-                vec_res = _vector_store.search(enhanced_query, n_results=max_results * 2)
+                vec_res = _vector_store.search(enhanced_query, n_results=max_results * 2, filter_doc=target_doc_id)
 
             scored_results = []
             for r in vec_res:
@@ -222,14 +259,18 @@ def search_documents_internal(
                         except Exception as ex:
                             print(f" Expansion error: {ex}")
 
-                    results.append({
-                        "doc_name": r["doc_name"],
-                        "section": r["section"],
-                        "content": r["content"][:4000],
-                        "source": r["source"]
-                    })
+                    # 문서명과 조항이 유효한 경우만 추가
+                    if r["doc_name"] and r["doc_name"] != "Unknown":
+                        results.append({
+                            "doc_name": r["doc_name"],
+                            "section": r["section"],
+                            "content": r["content"][:4000],
+                            "source": r["source"]
+                        })
+                    else:
+                        print(f"    [필터링] 문서명 누락된 결과 제외: section={r['section']}")
         except Exception as e:
-            print(f" Vector search error: {e}")
+            print(f"    [Vector search error] {e}")
 
     # 2. 관련 문서/조항으로 탐색 확장 (Graph DB 활용)
     # ... (생략 - 기존 로직 유지하되 results 필터링 반영)
@@ -258,9 +299,18 @@ def search_documents_internal(
                                     seen_content.add(hashlib.md5(ref_content[:200].encode()).hexdigest())
             results.extend(extended_results)
         except Exception as e:
-            print(f" Graph expansion error: {e}")
+            print(f"    [Graph expansion error] {e}")
 
-    return results
+    # 최종 검증: 문서명과 조항이 있는 결과만 반환
+    valid_results = []
+    for r in results:
+        if r.get("doc_name") and r["doc_name"] not in ["Unknown", "None", ""]:
+            valid_results.append(r)
+        else:
+            print(f"    [최종 필터링] 유효하지 않은 결과 제외: doc={r.get('doc_name')}, section={r.get('section')}")
+
+    print(f"    [검색 완료] 전체 {len(results)}건 중 유효 결과 {len(valid_results)}건 반환")
+    return valid_results
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 딥 검색 에이전트 상태 정의 (CompiledSubAgent 호환)
@@ -285,30 +335,40 @@ def call_model_node(state: SearchState):
     client = get_zai_client()
     messages = state["messages"]
     
-    # 딥 검색을 유도하는 시스템 프롬프트 (Best practices 반영)
-    system_prompt = f"""당신은 GMP/SOP 전문 **Deep Search 에이전트**입니다.
+    # Deep search system prompt (English for better LLM comprehension)
+    system_prompt = f"""You are a specialized **Deep Search Agent** for GMP/SOP document retrieval.
 
-    [역할]
-    사용자의 질문에 답하기 위해 필요한 정보를 문서 저장소에서 찾아 정밀 분석합니다.
+    [ROLE]
+    Find and analyze information from the document repository to answer user questions accurately.
 
-    [작업 가이드]
-    1. **계획(Planning)**: 복합적인 질문인 경우, 질문을 여러 핵심 키워드나 특정 조항 번호로 분해하세요.
-    2. **검색(Search)**: `search_documents_tool`을 사용하여 정보를 찾으세요.
-       - **정밀 타겟팅**: 질문에 특정 조항 번호(예: 5.4.2)가 언급되었다면 `target_clause` 인자에 명시하세요.
-       - **키워드 발췌**: 질문에서 '정의', '목적', '절차' 등 핵심 의도 단어를 발췌하여 `keywords`로 전달하세요.
-    3. **검증 및 필터링 (중요)**: 
-       - 검색된 결과 중 본문 없이 제목만 있는 조항(예: '3. 정의')이나 질문과 연관성이 낮은 데이터는 **철저히 무시**하세요.
-       - 답변에 **실제로 사용한** 데이터 소스에 대해서만 답변 내용 중에 `[USE: 문서명 | 조항]` 형식의 태그를 남기세요. 
-       - 이 태그가 없는 소스는 참고문헌에서 자동으로 제외됩니다.
-    4. **답변 작성**: 검증된 정보를 바탕으로 자연스러운 **평문(Plain Text)** 답변을 작성하세요.
+    [WORKFLOW]
+    1. **Planning**: For complex questions, break them down into key keywords or specific clause numbers.
 
-    [답변 작성 규칙]
-    - 본문에서는 자연스럽게 내용만 설명하세요. 출처 표기는 하지 마세요.
-    - 검색된 정보만을 사용하여 답변하세요.
-    - 답변 끝에는 자동으로 [참고 문서] 섹션이 추가되므로, 직접 작성하지 마세요.
-    - 답변 완료 시 반드시 [DONE] 태그를 붙여 작업 완료를 알리세요.
+    2. **Search**: Use `search_documents_tool` to find information.
+       - **Preserve Natural Language**: Pass the user's original question AS-IS to the `query` parameter. DO NOT convert it to a query format.
+         Example: "작업지침서가 뭐야" → query: "작업지침서가 뭐야" (✓), query: "작업지침서 정의" (✗)
+       - **Precise Targeting**: If the question mentions a specific clause number (e.g., 5.4.2), specify it in `target_clause`.
+       - **Keyword Extraction**: Extract ONLY nouns/terms that actually appear in the question for `keywords`. DO NOT infer or add words.
+         Example: "작업지침서가 뭐야" → keywords: ["작업지침서"] (✓), keywords: ["작업지침서", "정의", "목적"] (✗)
 
-    [답변 형식 예시]
+    3. **Validation & Filtering (CRITICAL)**:
+       - IGNORE results that only contain headers without content (e.g., '3. 정의') or are irrelevant to the question.
+       - Only include information that you actually use in your answer.
+
+    4. **Answer Generation**: Write a natural **plain text** answer in Korean based on verified information.
+       - **MANDATORY**: For EVERY piece of information you use in your answer, add a hidden tag: [USE: 문서명 | 조항]
+       - Place the tag immediately after using that information in your answer.
+       - Example: "작업지침서는 업무 지침 문서입니다.[USE: EQ-SOP-00001 | 5.1.3 제 3레벨(작업지침서(WI):]"
+       - ONLY sources with [USE: ...] tags will appear in the final [참고 문서] section.
+       - If you don't tag a source, it will be excluded from references.
+
+    [ANSWER FORMAT RULES]
+    - Write content naturally in the body. DO NOT cite sources inline.
+    - Use ONLY information from search results.
+    - DO NOT create a [참고 문서] section yourself (it's auto-generated).
+    - End your answer with the [DONE] tag to signal completion.
+
+    [ANSWER FORMAT EXAMPLE]
     작업지침서는 현장에서 수행되는 업무를 일관되게 운영하기 위한 지침 문서입니다.
 
     주요 특징은 다음과 같습니다.
@@ -317,36 +377,48 @@ def call_model_node(state: SearchState):
 
     [DONE]
 
-    [절대 금지 사항]
-    - 본문 중간이나 끝에 [참고 문서] 섹션을 직접 작성하지 마세요 (자동 추가됨)
-    - 본문에서 "[문서명 조항]" 형식의 출처를 표기하지 마세요
-    - 볼드(**), 헤더(#), 리스트 기호(-, *), 이탤릭(_) 등 마크다운 형식 사용 금지
-    - 강조가 필요한 경우 대괄호 [ ] 또는 줄바꿈을 활용하세요
-    - 모든 텍스트는 일반 평문(Plain Text)으로만 작성해야 합니다
+    [STRICT PROHIBITIONS]
+    - DO NOT create [참고 문서] section in the middle or end of your answer (auto-generated from [USE: ...] tags)
+    - DO NOT cite sources inline like "[문서명 조항]" in visible text
+    - DO NOT use markdown formatting: NO bold (**), headers (#), list markers (-, *), italics (_)
+    - For emphasis, use brackets [ ] or line breaks
+    - Write ONLY in plain text format
+
+    [IMPORTANT NOTES]
+    - [USE: ...] tags are hidden from the user - they're automatically removed and converted to the [참고 문서] section
+    - You MUST tag every piece of information you use, otherwise it won't appear in references
+    - Missing tags = missing references = user won't know which documents you used
     """
     
     # 시스템 프롬프트를 메시지 맨 앞에 삽입
     full_messages = [{"role": "system", "content": system_prompt}] + messages
     
-    # 도구 정의
+    # Tool definition
     tools = [
         {
             "type": "function",
             "function": {
                 "name": "search_documents_tool",
-                "description": "GMP/SOP 문서를 검색합니다. 에이전트가 직접 검색 조건을 설계할 수 있습니다.",
+                "description": "Search GMP/SOP documents. The agent designs search conditions autonomously.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "query": {"type": "string", "description": "검색 쿼리 (전체 문장 또는 핵심 문구)"},
+                        "query": {
+                            "type": "string",
+                            "description": "User's original question as-is (e.g., '작업지침서가 뭐야'). DO NOT transform or rewrite."
+                        },
                         "keywords": {
-                            "type": "array", 
+                            "type": "array",
                             "items": {"type": "string"},
-                            "description": "질문에서 발췌한 핵심 단어 리스트 (예: ['작업지침서', '절차'])"
+                            "description": "Key nouns that actually appear in the question (e.g., ['작업지침서']). DO NOT include inferred words."
                         },
                         "target_clause": {
-                            "type": "string", 
-                            "description": "콕 집어서 찾을 조항 번호 (예: '5.1.3', '5.4.2'). 명확할 때만 사용하세요."
+                            "type": "string",
+                            "description": "Specific clause number to target (e.g., '5.1.3', '5.4.2'). Use only when explicitly mentioned."
+                        },
+                        "target_doc_id": {
+                            "type": "string",
+                            "description": "Limit search scope to a specific document (e.g., 'EQ-SOP-00001')"
                         }
                     },
                     "required": ["query"]
@@ -372,13 +444,25 @@ def tool_executor_node(state: SearchState):
     tool_outputs = []
     for tc in tool_calls:
         if tc.function.name == "search_documents_tool":
-            args = json.loads(tc.function.arguments)
+            try:
+                args = json.loads(tc.function.arguments)
+            except json.JSONDecodeError as e:
+                print(f"    [Deep Search] JSON 파싱 에러: {e}")
+                print(f"    원본 arguments: {tc.function.arguments}")
+                tool_outputs.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": "검색 도구 호출 중 에러가 발생했습니다."
+                })
+                continue
+
             query = args.get("query")
             keywords = args.get("keywords", [])
             target_clause = args.get("target_clause")
-            print(f"    [Deep Search] 도구 호출: '{query}' (키워드: {keywords}, 타겟조항: {target_clause})")
+            target_doc_id = args.get("target_doc_id")
+            print(f"    [Deep Search] 도구 호출: '{query}' (키워드: {keywords}, 타겟조항: {target_clause}, 타겟문서: {target_doc_id})")
             
-            results = search_documents_internal(query=query, keywords=keywords, target_clause=target_clause)
+            results = search_documents_internal(query=query, keywords=keywords, target_clause=target_clause, target_doc_id=target_doc_id)
             print(f"    [Deep Search] 검색 결과 {len(results)}건 발견")
             
             formatted_results = []
@@ -474,53 +558,68 @@ def _ensure_reference_section(messages: List[Any], final_answer: str) -> str:
                 seen.add(key)
                 referenced_docs.append((doc_name, section))
 
-    # 2. 참고문헌 섹션 생성 (순수 동적 필터링)
+    # 2. 참고문헌 섹션 생성 (LLM이 태그한 소스만 포함)
     if referenced_docs:
-        ref_section = "\n\n[참고 문서]\n"
-        
-        # 에이전트가 답변 본문에서 명시적으로 [USE: ...] 태그를 사용한 소스만 정밀 추출
+        # 2-1. LLM이 [USE: ...] 태그로 명시한 소스 추출
         used_sources = re.findall(r'\[USE:\s*([^\|\]]+)\s*\|\s*([^\]]+)\]', final_answer)
-        
-        # [데이터 품질 검증] 알맹이 없는 '정의' 헤더 등을 필터링하는 로직 (하드코딩 제거)
-        def is_useful_content(doc, sec):
-            # 실질적으로 정보를 담고 있지 않은 제목성 청크는 제외
-            # (여기서는 referenced_docs의 데이터를 다시 검증하거나, 
-            # 에이전트가 명시한 것만 믿는 방식으로 단순화)
-            return True
 
-        used_map = {}
-        for doc, sec in used_sources:
-            d_key = doc.strip()
-            s_key = sec.strip()
-            if d_key not in used_map:
-                used_map[d_key] = set()
-            used_map[d_key].add(s_key)
+        if not used_sources:
+            print(f"    [참고문헌] LLM이 [USE: ...] 태그를 사용하지 않음. 검색된 상위 결과만 표시합니다.")
+            # 태그가 없으면 상위 3개 결과만 표시
+            used_sources = referenced_docs[:3]
 
+        # 2-2. 문서 존재 여부 확인 (SQL DB 조회)
+        valid_docs = set()
+        if _sql_store:
+            try:
+                all_docs = _sql_store.list_documents()
+                valid_docs = {doc.get('doc_name') or doc.get('id') for doc in all_docs}
+            except Exception as e:
+                print(f"    [참고문헌 검증 오류] {e}")
+
+        # 2-3. 태그된 소스를 문서명 기준으로 그룹화
         doc_map = {}
-        for doc_name, section in referenced_docs:
-            # 에이전트가 명시적으로 사용했다고 태그를 단 소스만 포함
-            if doc_name in used_map and section in used_map[doc_name]:
-                if doc_name not in doc_map:
-                    doc_map[doc_name] = []
-                # 중복 조항 방지
-                if section not in doc_map[doc_name]:
-                    doc_map[doc_name].append(section)
-        
-        # [최종 출력]
+        for doc_name, section in used_sources:
+            doc_name = doc_name.strip()
+            section = section.strip()
+
+            # 문서 존재 여부 확인
+            if valid_docs and doc_name not in valid_docs:
+                print(f"    [참고문헌 필터링] 존재하지 않는 문서 제외: {doc_name}")
+                continue
+
+            # 조항이 너무 긴 경우 제한
+            if len(section) > 50:
+                section = section[:47] + "..."
+
+            if doc_name not in doc_map:
+                doc_map[doc_name] = []
+
+            # 중복 조항 방지
+            if section not in doc_map[doc_name]:
+                doc_map[doc_name].append(section)
+
+        # 2-4. [최종 출력] - LLM이 실제로 사용한 문서만 표시
         if doc_map:
+            ref_section = "\n\n[참고 문서]\n"
             for doc_name, sections in doc_map.items():
-                unique_sections = sorted(list(sections))
+                # 조항 번호 기준 정렬 시도
+                try:
+                    unique_sections = sorted(sections, key=lambda x: [int(n) if n.isdigit() else n for n in re.split(r'\.', x.split()[0])])
+                except:
+                    unique_sections = sections
+
                 ref_section += f"- {doc_name} ({', '.join(unique_sections)})\n"
         else:
-            # 에이전트가 태그를 하나도 사용하지 않은 경우
-            ref_section = "" # 불필요한 참고문헌 섹션 노출 방지
+            ref_section = ""
     else:
         ref_section = ""
 
-    # 3. 답변 본문에서 [USE: ...] 태그 제거 및 참고문서 섹션 추가
-    final_answer_cleaned = re.sub(r'\[USE:\s*[^\]]+\]', '', final_answer).strip()
-    
-    # 기존 [참고 문서] 섹션 제거 로직 유지
+    # 3. 답변 본문 정리 및 참고문서 섹션 추가
+    # [USE: ...] 태그 제거
+    final_answer_cleaned = re.sub(r'\[USE:\s*[^\]]+\]', '', final_answer)
+
+    # LLM이 직접 작성한 [참고 문서] 섹션 제거 (자동 생성으로 대체)
     final_answer_cleaned = re.sub(
         r'\n*\[참고 문서\].*$',
         '',

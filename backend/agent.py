@@ -261,10 +261,10 @@ def orchestrator_node(state: AgentState):
     
     system_prompt = """당신은 GMP 규정 시스템의 메인 오케스트레이터(Manager)입니다.
     사용자의 질문을 해결하기 위해 하위 전문가 에이전트들을 지휘하고, 그들의 보고를 검증하는 역할을 수행합니다.
-    
+
     [작업 흐름]
     1. **History 분석**: 이전 대화 내용(History)을 보고, 이미 수행된 에이전트의 보고가 있는지 확인하세요.
-    2. **판단(Judgement)**: 
+    2. **판단(Judgement)**:
        - 보고 내용이 충분하다면 -> 'finish'를 선택하여 서브 에이전트의 답변을 그대로 확정하세요. (오케스트레이터가 직접 답변을 재작성하거나 요약하지 않습니다)
        - 보고 내용이 부족하거나 오류가 있다면 -> 다른 에이전트를 호출하거나, 검색 조건을 바꿔서 다시 시도하게 하세요.
     
@@ -312,11 +312,11 @@ def orchestrator_node(state: AgentState):
         if next_action == "finish":
             # 마지막 서브 에이전트의 보고를 그대로 사용하거나, 히스토리에서 답변 추출
             last_message = messages[-1]["content"] if messages else "답변을 준비하지 못했습니다."
-            
+
             # [DONE] 태그 제거나 깔끔한 마무리 (필요 시)
             clean_answer = last_message.replace("[DONE]", "").strip()
             # 만약 보고 형식([검색 에이전트 보고] 등)이 있다면 그대로 노출하거나 정리 가능
-            
+
             return {"next_agent": "end", "final_answer": clean_answer}
             
         return {"next_agent": next_action}
