@@ -9,8 +9,9 @@ import re
 import json
 import hashlib
 import operator
-from typing import Any, Dict, List, Optional, Literal, Annotated, TypedDict
-
+from typing import List, Dict, Any, Optional, Literal, Annotated, TypedDict
+from backend.agent import get_zai_client, AgentState, search_sop_tool, get_sop_headers_tool, safe_json_loads, normalize_doc_id
+from langchain_core.tools import tool
 from langsmith import traceable
 from langgraph.graph import StateGraph, START, END
 
@@ -141,9 +142,17 @@ def search_documents_internal(
     # 0. 조항 번호 직접 및 하위 조회 (SQL Point & Prefix Match)
     if target_clause and _sql_store:
         try:
-            print(f"    [Point/Prefix Lookup] 조항 및 하위 조항 조회 시도: {target_clause}")
-            all_docs = _sql_store.list_documents()
-            for doc in all_docs:
+            print(f"    [Point/Prefix Lookup] 조항 및 하위 조항 조회 시도: {target_clause} (Target: {target_doc_id or '전체'})")
+            
+            # v8.4: 타겟 문서가 있으면 해당 문서만 타겟팅 (격리)
+            target_docs = []
+            if target_doc_id:
+                doc = _sql_store.get_document_by_name(target_doc_id)
+                if doc: target_docs = [doc]
+            else:
+                target_docs = _sql_store.list_documents()
+
+            for doc in target_docs:
                 doc_id = doc.get('id')
                 chunks = _sql_store.get_chunks_by_document(doc_id)
                 
@@ -151,6 +160,7 @@ def search_documents_internal(
                 sub_chunks = []
                 for chunk in chunks:
                     clause_val = str(chunk.get('clause'))
+                    # 5조항 -> 5, 5.1, 5.3.1 등 모두 매칭
                     if clause_val == target_clause or clause_val.startswith(f"{target_clause}."):
                         content = chunk.get('content', '')
                         content_hash = hashlib.md5(content.encode()).hexdigest()
@@ -160,12 +170,12 @@ def search_documents_internal(
                                 "section": clause_val,
                                 "content": content,
                                 "source": "sql-hierarchical-lookup",
-                                "score": 2.0, # 직접/하위 매칭은 최고 점수
+                                "score": 2.5, # 직접/하위 매칭은 최고 점수 상향
                                 "hash": content_hash
                             })
                             seen_content.add(content_hash)
                 
-                # 조항이 발견되었을 경우, 검색 결과에 추가
+                # 조항이 발견되었을 경우 추가
                 results.extend(sub_chunks)
         except Exception as e:
             print(f" Hierarchical lookup failed: {e}")
@@ -434,23 +444,17 @@ def tool_executor_node(state: SearchState):
     tool_outputs = []
     for tc in tool_calls:
         if tc.function.name == "search_documents_tool":
-            try:
-                args = json.loads(tc.function.arguments)
-            except json.JSONDecodeError as e:
-                print(f"    [Deep Search] JSON 파싱 에러: {e}")
-                print(f"    원본 arguments: {tc.function.arguments}")
-                tool_outputs.append({
-                    "role": "tool",
-                    "tool_call_id": tc.id,
-                    "content": "검색 도구 호출 중 에러가 발생했습니다."
-                })
-                continue
-
+            # safe_json_loads를 통해 강인한 파싱 수행
+            args = safe_json_loads(tc.function.arguments)
+            
             query = args.get("query")
             keywords = args.get("keywords", [])
             target_clause = args.get("target_clause")
-            target_doc_id = args.get("target_doc_id")
-            print(f"    [Deep Search] 도구 호출: '{query}' (키워드: {keywords}, 타겟조항: {target_clause}, 타겟문서: {target_doc_id})")
+            
+            # v8.4: 문서 ID 정규화 (eEQ- -> EQ-)
+            target_doc_id = normalize_doc_id(args.get("target_doc_id"))
+            
+            print(f"    [Deep Search] 도구 호출: '{query}' (키워드: {keywords}, 타겟조항: {target_clause}, 타겟문서: {target_doc_id or '전체'})")
             
             results = search_documents_internal(query=query, keywords=keywords, target_clause=target_clause, target_doc_id=target_doc_id)
             print(f"    [Deep Search] 검색 결과 {len(results)}건 발견")
