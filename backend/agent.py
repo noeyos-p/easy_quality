@@ -101,6 +101,13 @@ def init_agent_tools(vector_store_module, graph_store_instance, sql_store_instan
     except ImportError:
         pass
 
+    # 요약 에이전트 스토어 초기화
+    try:
+        from backend.sub_agent.summary import init_summary_stores
+        init_summary_stores(graph_store_instance)
+    except ImportError:
+        pass
+
 def get_openai_client():
     global _openai_client
     if not _openai_client:
