@@ -110,7 +110,20 @@ def _clean_noise_globally(markdown: str) -> str:
     noise_threshold = max(2, total_pages * 0.3)
     noise_templates = {t for t, count in line_templates.items() if count >= noise_threshold}
 
+    # 디버그: 노이즈로 판정된 템플릿 출력 (필요시 주석 해제)
+    # if noise_templates:
+    #     print(f"    [노이즈 제거] {len(noise_templates)}개 템플릿 제거 (임계값: {noise_threshold:.1f}페이지)")
+    #     for template in list(noise_templates)[:10]:  # 처음 10개
+    #         print(f"      - {template[:70]}")
+
     # 4. 노이즈 제거 및 본문 재구성
+    # 조항 패턴을 가진 라인은 보존 (단, "1 of 11" 같은 페이지 번호는 제외)
+    # "1." (섹션 헤더), "1.1" (조항), 조항만 있는 경우 모두 매칭
+    clause_pattern = re.compile(r'^\s*(\d+(?:\.\d+)*\.?)(?:\s+(?!of\s+\d)|$)')
+
+    preserved_clauses = 0
+    removed_lines = 0
+
     cleaned_parts = []
     for p in page_data:
         lines = p["content"].split('\n')
@@ -120,13 +133,24 @@ def _clean_noise_globally(markdown: str) -> str:
             if not stripped:
                 cleaned_lines.append("")
                 continue
+
+            # 조항 패턴이 있으면 무조건 보존
+            if clause_pattern.match(stripped):
+                cleaned_lines.append(l)
+                preserved_clauses += 1
+                continue
+
             template = re.sub(r'\d+', '#', stripped)
             if template in noise_templates:
+                removed_lines += 1
                 continue
             cleaned_lines.append(l)
-        
+
         # 페이지 마커는 정보 추출을 위해 일단 유지
         cleaned_parts.append(p["marker"] + "\n" + "\n".join(cleaned_lines))
+
+    # 디버그 로깅 (필요시 주석 해제)
+    # print(f"    [노이즈 필터] 조항 보존: {preserved_clauses}개, 노이즈 제거: {removed_lines}개")
 
     result = "\n".join(cleaned_parts)
     
@@ -189,26 +213,43 @@ def parse_clauses(markdown: str, max_level: int = None) -> List[Dict]:
             - content: 조항 내용
             - level: 깊이 (0부터 시작)
     """
+    # 볼드 마커 제거 (노이즈 분석 전에 먼저 실행)
+    # **1** **목적 Purpose** → 1 목적 Purpose
+    # 이렇게 하면 노이즈 템플릿 매칭에서 섹션 헤더가 제거되지 않음
+    markdown = re.sub(r'\*\*', '', markdown)  # 모든 볼드 마커 제거
+
     # 동적 노이즈 제거 (빈도 분석 기반)
     markdown = _clean_noise_globally(markdown)
 
-    # 개정이력/변경이력 섹션 제거
+    # 페이지 번호 패턴 제거 (조항으로 잘못 인식되는 것 방지)
+    # 예: "1 of 11", "2 of 11", "Page 1", "페이지 1" 등
+    page_number_patterns = [
+        r'(?m)^\s*(\d+)\s+of\s+\d+.*?$',  # "1 of 11 Number: ..." 형식
+        r'(?m)^\s*(?:Page|페이지)\s+\d+.*?$',  # "Page 1", "페이지 1" 형식
+        r'(?m)^\s*\d+\s*/\s*\d+.*?$',  # "1/11" 형식
+    ]
+    for pattern in page_number_patterns:
+        markdown = re.sub(pattern, '', markdown, flags=re.MULTILINE)
+
+    # 개정이력/변경이력 섹션 제거 (제목 행만 제거)
+    # 주의: 이전에 re.DOTALL을 사용하면 문서 끝까지 모두 제거되므로 제거함
     revision_patterns = [
-        r'(?i)(개정\s*이력|변경\s*이력|Revision\s+History|Change\s+History).*',
-        r'(?i)(\d+\.\d+\s+전체\s+변경관리).*'
+        r'(?im)^(개정\s*이력|변경\s*이력|Revision\s+History|Change\s+History)[^\n]*\n?',
+        r'(?im)^(\d+\.\d+\s+전체\s+변경관리)[^\n]*\n?'
     ]
     for pattern in revision_patterns:
-        markdown = re.sub(pattern, '', markdown, flags=re.DOTALL)
+        markdown = re.sub(pattern, '', markdown)
 
     # 조항 번호 패턴 (매우 관대하게)
-    # 조항 번호 + 공백 (여러 개) + 아무 문자 (하위 조항 제한 없음)
-    pattern = r'(?:^|\n)\s*(\d+(?:\.\d+)*)\s+'
+    # "1." (섹션 헤더) 및 "1.1" (조항) 모두 매칭하도록 trailing dot 허용
+    pattern = r'(?:^|\n)\s*(\d+(?:\.\d+)*\.?)\s+'
     all_matches = list(re.finditer(pattern, markdown))
 
     print(f"    디버그: {len(all_matches)}개 패턴 발견")
 
     clauses = []
     filtered_count = 0
+    filtered_details = []  # 제외된 조항 상세 정보
 
     for i, m in enumerate(all_matches):
         clause_num = m.group(1)
@@ -223,19 +264,21 @@ def parse_clauses(markdown: str, max_level: int = None) -> List[Dict]:
         # 레벨 필터링
         if max_level is not None and level > max_level:
             filtered_count += 1
+            filtered_details.append(f"{clause_num}: 레벨 초과")
             continue
 
         # 내용 추출
         start = m.end()
         end = all_matches[i+1].start() if i+1 < len(all_matches) else len(markdown)
         content = markdown[start:end]
-        
+
         # 본문 내의 페이지 마커 제거
         content = re.sub(r'<!-- PAGE:\d+ -->', '', content).strip()
 
         # 최소 길이 체크
         if len(content) < 5:
             filtered_count += 1
+            filtered_details.append(f"{clause_num}: 내용 너무 짧음 ({len(content)}자)")
             continue
 
         # 제목과 본문 분리
@@ -253,39 +296,48 @@ def parse_clauses(markdown: str, max_level: int = None) -> List[Dict]:
 
         # 필터링: 잘못된 매칭 제거
         skip = False
+        skip_reason = ""
 
         # 1. 제목이 너무 짧으면 제외
         if len(title) < 2:
             filtered_count += 1
             skip = True
+            skip_reason = f"제목 너무 짧음: '{title}'"
 
-        # 2. 버전 번호 (1.0 전체 변경...) 제외
+        # 2. 버전 번호 (1.0 전체 변경...) 제외 - 더 정밀한 조건
         elif re.match(r'^\d+\.\d+$', clause_num) and level == 1:
-            if any(kw in title for kw in ['변경', '개정', '전체', 'Revision', 'Change']):
+            # 제목이 "버전", "개정 내역", "변경 이력" 등으로 시작하는 경우만 제외
+            if re.match(r'^(버전|개정\s*내역|변경\s*이력|Revision\s+History|Change\s+Log|Version)\b', title, re.IGNORECASE):
                 filtered_count += 1
                 skip = True
+                skip_reason = f"버전 번호 패턴: '{title}'"
 
         # 3. 괄호로만 구성된 제목 제외
         elif re.match(r'^\([^\)]+\)\s*$', title):
             filtered_count += 1
             skip = True
+            skip_reason = f"괄호만: '{title}'"
 
         # 4. 숫자와 기호만 있는 제목 제외
         elif re.match(r'^[\d\s\(\)\-\.,]+$', title):
             filtered_count += 1
             skip = True
+            skip_reason = f"숫자/기호만: '{title}'"
 
         # 5. "characters", "numbers" 같은 설명 텍스트 제외
         elif re.match(r'^(characters|numbers|digits|letters|Level)\b', title, re.IGNORECASE):
             filtered_count += 1
             skip = True
+            skip_reason = f"설명 텍스트: '{title}'"
 
         # 6. "of" 나 페이지 번호로 시작하는 경우 제외
         elif re.match(r'^(of\s+\d+|page\s+\d+)', title, re.IGNORECASE):
             filtered_count += 1
             skip = True
+            skip_reason = f"페이지 번호: '{title}'"
 
         if skip:
+            filtered_details.append(f"{clause_num}: {skip_reason}")
             continue
 
         clauses.append({
@@ -297,6 +349,14 @@ def parse_clauses(markdown: str, max_level: int = None) -> List[Dict]:
         })
 
     print(f"    ✓ {len(clauses)}개 조항 추출")
+
+    if filtered_count > 0:
+        print(f"    ⚠ {filtered_count}개 조항 제외됨:")
+        for detail in filtered_details[:10]:  # 최대 10개만 출력
+            print(f"      - {detail}")
+        if len(filtered_details) > 10:
+            print(f"      ... 외 {len(filtered_details) - 10}개")
+
     return clauses
 
 

@@ -1,17 +1,21 @@
 """
-Neo4j 그래프 저장소 - 간소화 버전
+Neo4j 그래프 저장소
 
-핵심 기능만 유지:
+노드 타입:
 - Document: 문서 관리
 - Section: 조항 관리 + LLM 메타데이터
-- 문서 간 참조 관계
-- Question 추적 (RAG 설명 가능성)
+- DocumentType: 문서 유형 (SOP, WI, FORM 등)
+- Concept: 관리 영역 (user_account, document_lifecycle, training 등)
+- Question: RAG 질문 추적
 
-제거된 것:
-- Term, Role 노드 (사용 안 함)
-- DocumentType (메타데이터로 충분)
-- Concept (intent_scope로 충분)
-- 복잡한 헬퍼 함수들
+관계 타입:
+- HAS_SECTION: Document -> Section
+- PARENT_OF: Section -> Section (계층)
+- REFERENCES: Document -> Document (문서 간 참조)
+- IS_TYPE: Document -> DocumentType
+- MENTIONS: Section -> Document (조항 내 타 문서 언급)
+- BELONGS_TO_CONCEPT: Section -> Concept
+- USED_SECTION: Question -> Section (RAG 추적)
 """
 
 from neo4j import GraphDatabase
@@ -77,8 +81,11 @@ class Neo4jGraphStore:
             "CREATE CONSTRAINT doc_id IF NOT EXISTS FOR (d:Document) REQUIRE d.doc_id IS UNIQUE",
             "CREATE CONSTRAINT section_id IF NOT EXISTS FOR (s:Section) REQUIRE s.section_id IS UNIQUE",
             "CREATE CONSTRAINT question_id IF NOT EXISTS FOR (q:Question) REQUIRE q.id IS UNIQUE",
+            "CREATE CONSTRAINT doc_type_code IF NOT EXISTS FOR (dt:DocumentType) REQUIRE dt.code IS UNIQUE",
+            "CREATE CONSTRAINT concept_id IF NOT EXISTS FOR (c:Concept) REQUIRE c.concept_id IS UNIQUE",
             "CREATE INDEX doc_title IF NOT EXISTS FOR (d:Document) ON (d.title)",
             "CREATE INDEX section_title IF NOT EXISTS FOR (s:Section) ON (s.title)",
+            "CREATE INDEX section_intent_scope IF NOT EXISTS FOR (s:Section) ON (s.intent_scope)",
         ]
 
         with self.driver.session(database=self.database) as session:
@@ -99,13 +106,55 @@ class Neo4jGraphStore:
     # Document 관리
     # ═══════════════════════════════════════════════════════════════════════════
 
-    def create_document(self, doc_id: str, title: str, version: str = "1.0", **metadata):
+    def create_document(self, doc_id: str, title: str, version: str = "1.0",
+                       effective_date: str = "", owning_dept: str = "", **metadata):
         """문서 생성"""
         with self.driver.session(database=self.database) as session:
             session.run("""
                 MERGE (d:Document {doc_id: $doc_id})
-                SET d.title = $title, d.version = $version, d.updated_at = datetime()
-            """, doc_id=doc_id, title=title, version=version)
+                SET d.title = $title,
+                    d.version = $version,
+                    d.effective_date = $effective_date,
+                    d.owning_dept = $owning_dept,
+                    d.updated_at = datetime()
+            """, doc_id=doc_id, title=title, version=version,
+                effective_date=effective_date, owning_dept=owning_dept)
+
+    def create_document_type(self, code: str, name_kr: str, name_en: str):
+        """DocumentType 노드 생성"""
+        with self.driver.session(database=self.database) as session:
+            session.run("""
+                MERGE (dt:DocumentType {code: $code})
+                SET dt.name_kr = $name_kr, dt.name_en = $name_en
+            """, code=code, name_kr=name_kr, name_en=name_en)
+
+    def link_document_type(self, doc_id: str, type_code: str):
+        """Document -[:IS_TYPE]-> DocumentType 관계"""
+        with self.driver.session(database=self.database) as session:
+            session.run("""
+                MATCH (d:Document {doc_id: $doc_id})
+                MATCH (dt:DocumentType {code: $type_code})
+                MERGE (d)-[:IS_TYPE]->(dt)
+            """, doc_id=doc_id, type_code=type_code)
+
+    def create_concept(self, concept_id: str, name_kr: str, name_en: str, description: str = ""):
+        """Concept 노드 생성 (관리 영역)"""
+        with self.driver.session(database=self.database) as session:
+            session.run("""
+                MERGE (c:Concept {concept_id: $concept_id})
+                SET c.name_kr = $name_kr,
+                    c.name_en = $name_en,
+                    c.description = $description
+            """, concept_id=concept_id, name_kr=name_kr, name_en=name_en, description=description)
+
+    def link_section_concept(self, section_id: str, concept_id: str):
+        """Section -[:BELONGS_TO_CONCEPT]-> Concept 관계"""
+        with self.driver.session(database=self.database) as session:
+            session.run("""
+                MATCH (s:Section {section_id: $section_id})
+                MATCH (c:Concept {concept_id: $concept_id})
+                MERGE (s)-[:BELONGS_TO_CONCEPT]->(c)
+            """, section_id=section_id, concept_id=concept_id)
 
     def get_document(self, doc_id: str) -> Optional[Dict]:
         """문서 조회"""
@@ -194,11 +243,12 @@ class Neo4jGraphStore:
             )
 
     def create_section_hierarchy(self, parent_id: str, child_id: str):
-        """섹션 계층 관계"""
+        """섹션 계층 관계 (같은 문서 내에서만)"""
         with self.driver.session(database=self.database) as session:
             session.run("""
                 MATCH (p:Section {section_id: $parent})
                 MATCH (c:Section {section_id: $child})
+                WHERE p.doc_id = c.doc_id
                 MERGE (p)-[:PARENT_OF]->(c)
             """, parent=parent_id, child=child_id)
 
@@ -242,32 +292,43 @@ class Neo4jGraphStore:
             """, from_doc=from_doc, to=to_doc)
 
     def link_section_mentions(self, section_id: str, mentioned_docs: List[str]):
-        """섹션에서 언급한 문서들 연결"""
+        """섹션에서 언급한 문서들 연결 (Section -[:MENTIONS]-> Document)"""
         with self.driver.session(database=self.database) as session:
             for doc_id in mentioned_docs:
+                # MERGE: 참조된 Document가 없으면 자동 생성
                 session.run("""
                     MATCH (s:Section {section_id: $section})
                     MERGE (d:Document {doc_id: $doc})
+                    ON CREATE SET d.title = $doc, d.version = "", d.effective_date = "", d.owning_dept = ""
                     MERGE (s)-[:MENTIONS]->(d)
                 """, section=section_id, doc=doc_id)
 
     def get_document_references(self, doc_id: str) -> Dict:
-        """문서 참조 관계"""
+        """문서 참조 관계 (MENTIONS 기반)"""
         with self.driver.session(database=self.database) as session:
             result = session.run("""
                 MATCH (d:Document {doc_id: $doc_id})
-                OPTIONAL MATCH (d)-[:REFERENCES]->(ref:Document)
-                OPTIONAL MATCH (citing:Document)-[:REFERENCES]->(d)
+
+                // 이 문서의 섹션들이 MENTIONS하는 문서들
+                OPTIONAL MATCH (d)-[:HAS_SECTION]->(s:Section)-[:MENTIONS]->(ref:Document)
+
+                // 다른 문서의 섹션들이 이 문서를 MENTIONS하는 경우
+                OPTIONAL MATCH (citing_section:Section)-[:MENTIONS]->(d)
+                OPTIONAL MATCH (citing_doc:Document)-[:HAS_SECTION]->(citing_section)
+
                 RETURN d,
                        collect(DISTINCT ref.doc_id) as references,
-                       collect(DISTINCT citing.doc_id) as cited_by
+                       collect(DISTINCT citing_doc.doc_id) as cited_by
             """, doc_id=doc_id)
             record = result.single()
             if record:
+                # null 값 제거
+                references = [r for r in record["references"] if r]
+                cited_by = [c for c in record["cited_by"] if c]
                 return {
                     "document": dict(record["d"]),
-                    "references": record["references"],
-                    "cited_by": record["cited_by"]
+                    "references": references,
+                    "cited_by": cited_by
                 }
             return None
 
@@ -348,14 +409,18 @@ class Neo4jGraphStore:
             result = session.run("""
                 OPTIONAL MATCH (d:Document) WITH count(d) as docs
                 OPTIONAL MATCH (s:Section) WITH docs, count(s) as sections
-                OPTIONAL MATCH (q:Question) WITH docs, sections, count(q) as questions
-                OPTIONAL MATCH ()-[r]->() WITH docs, sections, questions, count(r) as rels
-                RETURN docs, sections, questions, rels
+                OPTIONAL MATCH (dt:DocumentType) WITH docs, sections, count(dt) as doc_types
+                OPTIONAL MATCH (c:Concept) WITH docs, sections, doc_types, count(c) as concepts
+                OPTIONAL MATCH (q:Question) WITH docs, sections, doc_types, concepts, count(q) as questions
+                OPTIONAL MATCH ()-[r]->() WITH docs, sections, doc_types, concepts, questions, count(r) as rels
+                RETURN docs, sections, doc_types, concepts, questions, rels
             """)
             record = result.single()
             return {
                 "documents": record["docs"] or 0,
                 "sections": record["sections"] or 0,
+                "document_types": record["doc_types"] or 0,
+                "concepts": record["concepts"] or 0,
                 "questions": record["questions"] or 0,
                 "relationships": record["rels"] or 0
             }
@@ -370,8 +435,52 @@ def upload_document_to_graph(graph: Neo4jGraphStore, result: dict, filename: str
     doc_id = result.get("doc_id") or "UNKNOWN"
     title = result.get("doc_title") or filename
 
+    # 문서 타입 추출 (EQ-SOP, EQ-WI 등)
+    doc_type_code = ""
+    doc_type_kr = ""
+    doc_type_en = ""
+    if doc_id.startswith("EQ-SOP"):
+        doc_type_code = "SOP"
+        doc_type_kr = "표준운영절차서"
+        doc_type_en = "Standard Operating Procedure"
+    elif doc_id.startswith("EQ-WI"):
+        doc_type_code = "WI"
+        doc_type_kr = "작업지침서"
+        doc_type_en = "Work Instruction"
+    elif doc_id.startswith("EQ-FORM"):
+        doc_type_code = "FORM"
+        doc_type_kr = "양식"
+        doc_type_en = "Form"
+
     # Document 생성
     graph.create_document(doc_id=doc_id, title=title, version="1.0")
+
+    # DocumentType 생성 및 연결
+    if doc_type_code:
+        graph.create_document_type(doc_type_code, doc_type_kr, doc_type_en)
+        graph.link_document_type(doc_id, doc_type_code)
+
+    # 기본 DocumentType 노드들 초기화 (MERGE이므로 중복 없음)
+    doc_types = [
+        ("SOP", "표준운영절차서", "Standard Operating Procedure"),
+        ("WI", "작업지침서", "Work Instruction"),
+        ("FORM", "양식", "Form"),
+        ("MBR", "제조기록서", "Master Batch Record"),
+        ("SPEC", "규격서", "Specification"),
+    ]
+    for code, name_kr, name_en in doc_types:
+        graph.create_document_type(code, name_kr, name_en)
+
+    # 기본 Concept 노드들 초기화 (MERGE이므로 중복 없음)
+    concepts = [
+        ("user_account", "사용자 접근 관리", "User Access Management", "사용자 계정, 권한, 역할 관리"),
+        ("document_lifecycle", "문서 수명주기", "Document Lifecycle", "문서 작성, 승인, 개정, 폐기 등"),
+        ("training", "교육 및 자격", "Training and Qualification", "교육, 훈련, 자격 관리"),
+        ("system_configuration", "시스템 설정", "System Configuration", "시스템 구성 및 설정"),
+        ("audit_evidence", "감사 증적", "Audit Evidence", "감사 대응 자료"),
+    ]
+    for concept_id, name_kr, name_en, description in concepts:
+        graph.create_concept(concept_id, name_kr, name_en, description)
 
     # Section 생성
     for chunk in result.get("chunks", []):
@@ -380,8 +489,8 @@ def upload_document_to_graph(graph: Neo4jGraphStore, result: dict, filename: str
         if not clause_id:
             continue
 
-        # section_id는 조항 번호만 사용 (evaluate_gmp_unified 방식)
-        section_id = clause_id
+        # section_id는 문서ID:조항번호 형식으로 전역 고유하게
+        section_id = f"{doc_id}:{clause_id}"
         main_section = clause_id.split('.')[0] if '.' in clause_id else clause_id
 
         # 모든 LLM 메타데이터 필드 포함
@@ -408,16 +517,23 @@ def upload_document_to_graph(graph: Neo4jGraphStore, result: dict, filename: str
             llm_meta=llm_meta
         )
 
-        # 계층 관계 (부모도 조항 번호만)
+        # Concept 연결 (intent_scope가 있으면)
+        intent_scope = llm_meta.get("intent_scope", "")
+        if intent_scope:
+            graph.link_section_concept(section_id, intent_scope)
+
+        # 계층 관계 (부모도 문서ID 포함)
         if '.' in clause_id:
             parent_clause = '.'.join(clause_id.split('.')[:-1])
-            graph.create_section_hierarchy(parent_clause, section_id)
+            parent_section_id = f"{doc_id}:{parent_clause}"
+            graph.create_section_hierarchy(parent_section_id, section_id)
 
-        # 타 문서 언급 추출
+        # 타 문서/조항 언급 추출
         content = chunk.get("text", "")
-        mentions = re.findall(r'(EQ-SOP-\d{5})', content, re.IGNORECASE)
-        if mentions:
-            graph.link_section_mentions(section_id, list(set(mentions)))
+        # 문서 ID 패턴 (EQ-SOP-00009, EQ-WI-00012 등)
+        doc_mentions = re.findall(r'(EQ-[A-Z]+-\d{5})', content, re.IGNORECASE)
+        if doc_mentions:
+            graph.link_section_mentions(section_id, list(set(doc_mentions)))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
