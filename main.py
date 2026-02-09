@@ -493,12 +493,65 @@ def chat(request: ChatRequest):
             session_id=request.session_id or str(uuid.uuid4()),
             model_name=request.llm_model or "gpt-4o-mini"
         )
-        
+
+        answer = response.get("answer")
+
+        # LLM as a Judge 평가
+        evaluation_scores = None
+
+        # 에러 메시지 패턴 감지
+        error_patterns = ["오류가 발생", "에러", "실패", "Error", "Exception", "찾을 수 없", "준비하지 못", "로딩 에러"]
+        is_error_message = any(pattern in answer for pattern in error_patterns)
+
+        try:
+            from backend.evaluation import AgentEvaluator
+
+            # 평가 생략 조건
+            if len(answer) < 20:
+                print("평가 생략: 답변이 너무 짧음")
+            elif is_error_message:
+                print("평가 생략: 에러 메시지")
+            else:
+                # 평가 실행
+                evaluator = AgentEvaluator(judge_model="gpt-4o-mini")
+
+                # context 추출 (agent_log에서)
+                context = response.get("agent_log", {}).get("context", "")
+                if isinstance(context, list):
+                    context = "\n\n".join(context)
+
+                evaluation_scores = evaluator.evaluate_single(
+                    question=request.message,
+                    answer=answer,
+                    context=context,
+                    metrics=["faithfulness", "groundness", "relevancy", "correctness"]
+                )
+
+                # 로그 출력
+                if evaluation_scores:
+                    print(f"\n{'='*60}")
+                    print(f"평가 결과")
+                    print(f"{'='*60}")
+                    for metric, result in evaluation_scores.items():
+                        score = result.get("score", 0)
+                        reasoning = result.get("reasoning", "")
+                        print(f"\n[{metric.upper()}]")
+                        print(f"  점수: {score}/5")
+                        print(f"  이유: {reasoning}")
+                    print(f"{'='*60}\n")
+
+        except ImportError:
+            print("평가 모듈 사용 불가 (선택적 기능)")
+        except Exception as eval_error:
+            print(f"평가 실행 실패 (계속 진행): {eval_error}")
+            evaluation_scores = None
+
         return {
             "session_id": request.session_id,
-            "answer": response.get("answer"),
-            "sources": [], 
-            "agent_log": response
+            "answer": answer,
+            "sources": [],
+            "agent_log": response,
+            "evaluation_scores": evaluation_scores
         }
     except Exception as e:
         print(f" [Agent] 에러: {e}")

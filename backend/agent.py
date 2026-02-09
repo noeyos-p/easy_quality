@@ -392,7 +392,7 @@ def run_agent(query: str, session_id: str = "default", model_name: str = None, e
     global _app
     if not _app:
         _app = create_workflow()
-        
+
     initial_state = {
         "query": query,
         "messages": [{"role": "user", "content": query}],
@@ -402,7 +402,7 @@ def run_agent(query: str, session_id: str = "default", model_name: str = None, e
         "model_name": model_name,
         "loop_count": 0
     }
-    
+
     # LangGraph 실행
     result = _app.invoke(initial_state, config={"recursion_limit": 10})
 
@@ -415,8 +415,18 @@ def run_agent(query: str, session_id: str = "default", model_name: str = None, e
         elif isinstance(last_msg, dict):
             final_answer = last_msg.get("content", final_answer)
 
+    # context 추출 (평가용)
+    context = result.get("context", [])
+    if isinstance(context, list):
+        context = "\n\n".join(context)
+
     return {
         "answer": final_answer,
+        "agent_log": {
+            "context": context,
+            "next_agent": result.get("next_agent"),
+            "loop_count": result.get("loop_count", 0)
+        },
         "wrapper": True
     }
 

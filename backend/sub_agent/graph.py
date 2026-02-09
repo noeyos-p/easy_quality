@@ -93,37 +93,43 @@ def graph_agent_node(state: AgentState):
     mermaid_code = generate_mermaid_flow(doc_id, ref_data)
     
     # 4. 심층 분석 (Z.AI)
-    analysis_prompt = f"""다음 그래프 데이터를 바탕으로 질문에 대해 전문적인 분석 보고서를 작성하세요.
+    analysis_prompt = f"""다음 그래프 데이터를 바탕으로 질문에 대해 간단명료한 분석 보고서를 작성하세요.
     질문: {query}
     의도: {intent}
     데이터: {json.dumps(ref_data, ensure_ascii=False)}
-    
-    [보고서 규칙]
-    - **STRICT GROUNDING**: 오직 제공된 `데이터` 내의 관계 정보만 분석하세요.
-    - **NO INFERENCE**: 문서 간의 관계가 데이터에 명시되지 않았다면 "관계를 알 수 없음"으로 보고하세요.
-    - 질문의 의도({intent})에 맞춰 '영향'이나 '의존성'을 명확히 설명하세요.
-    - '참조하는 문서(References)'는 상위 규정 또는 필수 참고서입니다.
-    - '참조받는 문서(Cited By)'는 이 문서가 변경될 때 함께 업데이트되어야 할 대상입니다.
-    - 전문적인 용어를 사용하되 불렛 포인트로 간결하게 정리하세요.
-    - 한국어로 답변하세요.
-    - **EXTERNAL KNOWLEDGE PROHIBITED**: 일반적인 지식이나 상식에 기반한 문서 간 관계 추측을 엄격히 금지합니다.
+
+    [보고서 작성 규칙]
+    - **STRICT GROUNDING**: 오직 제공된 데이터 내의 관계 정보만 분석하세요
+    - **NO INFERENCE**: 문서 간의 관계가 데이터에 명시되지 않았다면 "관계를 알 수 없음"으로 보고하세요
+    - **NO MARKDOWN**: 마크다운 사용 금지 (**, ##, -, *, _ 등 사용 안 됨)
+    - **PLAIN TEXT ONLY**: 순수 텍스트만 사용하세요
+
+    [답변 형식]
+    {doc_id} 참조 관계 분석
+
+    참조하는 문서 (이 문서가 인용하는 상위 규정):
+    - 문서1, 문서2, ...
+
+    참조받는 문서 (이 문서를 인용하는 하위 문서):
+    - 문서1, 문서2, ...
+
+    분석:
+    (간단한 설명 2-3문장)
+
+    [금지사항]
+    - 마크다운, Mermaid 다이어그램, 표 사용 금지
+    - 일반적인 지식이나 상식에 기반한 추측 금지
+    - 데이터에 없는 관계 언급 금지
     """
-    
+
     analysis_res = client.chat.completions.create(
         model=model,
         messages=[{"role": "user", "content": analysis_prompt}]
     )
-    
-    final_report = f"""###  {doc_id} 관계망 분석 보고서
 
-{analysis_res.choices[0].message.content}
+    # Mermaid 다이어그램 제거, 간단한 텍스트만 반환
+    final_report = analysis_res.choices[0].message.content.strip()
 
-####  시각화 관계도 (Mermaid)
-```mermaid
-{mermaid_code}
-```
-"""
-    
-    # [중간 보고] 답변 에이전트가 사용할 수 있도록 context에 시각화 코드와 분석 내용을 함께 저장 (리스트 누적)
-    report = f"### [그래프 에이전트 관계 분석 보고]\n{final_report}"
+    # [중간 보고] 답변 에이전트가 사용할 수 있도록 context에 분석 내용 저장 (리스트 누적)
+    report = f"[그래프 에이전트 관계 분석 보고]\n\n{final_report}"
     return {"context": [report]}

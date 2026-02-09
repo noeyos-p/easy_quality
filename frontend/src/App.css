@@ -874,3 +874,101 @@ body {
 .status-indicator.disconnected {
   color: #f48771;
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   평가 점수 섹션
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.evaluation-section {
+  margin-top: 12px;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+
+.evaluation-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: background 0.2s;
+}
+
+.evaluation-header:hover {
+  background: var(--bg-hover);
+}
+
+.evaluation-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.evaluation-content {
+  padding: 12px;
+  background: var(--bg-darker);
+  border-radius: 4px;
+  margin-top: 8px;
+}
+
+.eval-metric {
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.eval-metric:last-child {
+  margin-bottom: 0;
+  padding-bottom: 0;
+  border-bottom: none;
+}
+
+.eval-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-right: 8px;
+}
+
+.eval-score {
+  font-size: 14px;
+  font-weight: bold;
+  padding: 2px 8px;
+  border-radius: 4px;
+  margin-left: 8px;
+}
+
+.eval-score.score-5 {
+  background: #22D142;
+  color: #000;
+}
+
+.eval-score.score-4 {
+  background: #85E89D;
+  color: #000;
+}
+
+.eval-score.score-3 {
+  background: #FFD700;
+  color: #000;
+}
+
+.eval-score.score-2 {
+  background: #FFA500;
+  color: #000;
+}
+
+.eval-score.score-1 {
+  background: #FF4444;
+  color: #FFF;
+}
+
+.eval-reasoning {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-top: 6px;
+  line-height: 1.4;
+  padding-left: 4px;
+  border-left: 2px solid var(--border);
+}
