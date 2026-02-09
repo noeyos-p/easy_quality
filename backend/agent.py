@@ -306,9 +306,9 @@ def get_sop_headers_tool(doc_id: str) -> str:
 class AgentState(TypedDict):
     query: str
     messages: Annotated[List[Any], operator.add]
-    next_agent: Literal["retrieval", "summary", "comparison", "graph", "end"]
+    next_agent: Literal["retrieval", "summary", "comparison", "graph", "answer", "end"]
     final_answer: str
-    context: str
+    context: Annotated[List[str], operator.add]
     model_name: Optional[str] # (레거시 호환용)
     worker_model: Optional[str] # 서브 에이전트(Worker)용 모델
     orchestrator_model: Optional[str] # 오케스트레이터용 모델
@@ -375,25 +375,9 @@ def orchestrator_node(state: AgentState):
         
         next_action = decision.get("next_action", "finish")
         
-        # 만약 finish라면 최종 답변 생성
+        # 만약 finish라면 답변 에이전트(answer)로 라우팅하여 최종 답변 생성 위임
         if next_action == "finish":
-            # 마지막 서브 에이전트의 보고를 그대로 사용 (Pass-through)
-            last_msg_content = ""
-            for msg in reversed(messages):
-                if hasattr(msg, "role") and msg.role == "assistant":
-                    last_msg_content = msg.content
-                    break
-                elif isinstance(msg, dict) and msg.get("role") == "assistant":
-                    last_msg_content = msg.get("content", "")
-                    break
-            
-            if not last_msg_content:
-                last_msg_content = "답변을 준비하지 못했습니다."
-
-            # [DONE] 태그 제거나 깔끔한 마무리
-            clean_answer = last_msg_content.replace("[DONE]", "").strip()
-            
-            return {"next_agent": "end", "final_answer": clean_answer}
+            return {"next_agent": "answer"}
             
         return {"next_agent": next_action}
         
@@ -430,7 +414,9 @@ def comparison_agent_node(state: AgentState):
     except:
         content = "버전 정보를 정확히 추출하지 못했습니다. (예: SOP-001 1.0과 2.0 비교해줘)"
 
-    return {"messages": [{"role": "assistant", "content": f"[비교 에이전트 보고]\n{content}"}]}
+    # [중간 보고] 답변 에이전트가 처리할 수 있도록 context에 분석 결과 저장 (리스트 누적)
+    report = f"### [비교 에이전트 버전 분석 보고]\n{content}"
+    return {"context": [report]}
 
 
 
@@ -444,6 +430,7 @@ def create_workflow():
         from backend.sub_agent.search import retrieval_agent_node as node_retrieval
         from backend.sub_agent.summary import summary_agent_node as node_summary
         from backend.sub_agent.graph import graph_agent_node as node_graph
+        from backend.sub_agent.answer import answer_agent_node as node_answer
         node_comparison = comparison_agent_node # 모듈 수준 함수 할당
     except ImportError as e:
         error_msg = str(e)
@@ -454,6 +441,7 @@ def create_workflow():
         node_summary = error_node
         node_comparison = error_node
         node_graph = error_node
+        node_answer = error_node
 
     workflow = StateGraph(AgentState)
 
@@ -464,6 +452,7 @@ def create_workflow():
     workflow.add_node("summary", node_summary)
     workflow.add_node("comparison", node_comparison)
     workflow.add_node("graph", node_graph)
+    workflow.add_node("answer", node_answer)
     
     # Edges
     workflow.add_edge(START, "orchestrator")
@@ -480,6 +469,7 @@ def create_workflow():
             "summary": "summary",
             "comparison": "comparison",
             "graph": "graph",
+            "answer": "answer",
             "end": END
         }
     )
@@ -489,6 +479,9 @@ def create_workflow():
     workflow.add_edge("summary", "orchestrator")
     workflow.add_edge("comparison", "orchestrator")
     workflow.add_edge("graph", "orchestrator")
+    
+    # 답변 에이전트가 생성한 답변은 최종 답변으로 종료
+    workflow.add_edge("answer", END)
     
     return workflow.compile()
 

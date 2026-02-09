@@ -651,10 +651,12 @@ def retrieval_agent_node(state: Dict[str, Any]) -> Dict[str, Any]:
     # 마지막 메시지가 LLM의 최종 답변
     final_msg = result["messages"][-1].content
 
-    # 참고문서 섹션 자동 추가 (무조건 표시)
+    # 참고문헌 섹션 자동 추가
     final_msg_with_refs = _ensure_reference_section(result["messages"], final_msg)
 
-    return {"messages": [{"role": "assistant", "content": final_msg_with_refs}]}
+    # [중요] 답변 에이전트 도입을 위해 직접 답변하지 않고 context에 보고서 형태로 저장 (리스트 형태로 반환하여 누적)
+    report = f"### [검색 에이전트 조사 최종 보고]\n{final_msg_with_refs}"
+    return {"context": [report]}
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 레거시 도구 호환용 (필요 시)

@@ -121,4 +121,6 @@ def graph_agent_node(state: AgentState):
 ```
 """
     
-    return {"messages": [{"role": "assistant", "content": f"[그래프 에이전트 보고]\n{final_report}"}]}
+    # [중간 보고] 답변 에이전트가 사용할 수 있도록 context에 시각화 코드와 분석 내용을 함께 저장 (리스트 누적)
+    report = f"### [그래프 에이전트 관계 분석 보고]\n{final_report}"
+    return {"context": [report]}
