@@ -6,7 +6,6 @@ Neo4j 그래프 저장소
 - Section: 조항 관리 + LLM 메타데이터
 - DocumentType: 문서 유형 (SOP, WI, FORM 등)
 - Concept: 관리 영역 (user_account, document_lifecycle, training 등)
-- Question: RAG 질문 추적
 
 관계 타입:
 - HAS_SECTION: Document -> Section
@@ -15,7 +14,6 @@ Neo4j 그래프 저장소
 - IS_TYPE: Document -> DocumentType
 - MENTIONS: Section -> Document (조항 내 타 문서 언급)
 - BELONGS_TO_CONCEPT: Section -> Concept
-- USED_SECTION: Question -> Section (RAG 추적)
 """
 
 from neo4j import GraphDatabase
@@ -80,7 +78,6 @@ class Neo4jGraphStore:
         constraints = [
             "CREATE CONSTRAINT doc_id IF NOT EXISTS FOR (d:Document) REQUIRE d.doc_id IS UNIQUE",
             "CREATE CONSTRAINT section_id IF NOT EXISTS FOR (s:Section) REQUIRE s.section_id IS UNIQUE",
-            "CREATE CONSTRAINT question_id IF NOT EXISTS FOR (q:Question) REQUIRE q.id IS UNIQUE",
             "CREATE CONSTRAINT doc_type_code IF NOT EXISTS FOR (dt:DocumentType) REQUIRE dt.code IS UNIQUE",
             "CREATE CONSTRAINT concept_id IF NOT EXISTS FOR (c:Concept) REQUIRE c.concept_id IS UNIQUE",
             "CREATE INDEX doc_title IF NOT EXISTS FOR (d:Document) ON (d.title)",
@@ -381,73 +378,6 @@ class Neo4jGraphStore:
             return None
 
     # ═══════════════════════════════════════════════════════════════════════════
-    # Question 추적 (RAG 설명 가능성)
-    # ═══════════════════════════════════════════════════════════════════════════
-
-    def create_question(self, question_id: str, text: str, answer: str = None,
-                       session_id: str = None, llm_model: str = None):
-        """질문 기록"""
-        with self.driver.session(database=self.database) as session:
-            session.run("""
-                MERGE (q:Question {id: $id})
-                SET q.text = $text,
-                    q.answer = $answer,
-                    q.session_id = $session_id,
-                    q.llm_model = $llm_model,
-                    q.created_at = datetime()
-            """, id=question_id, text=text, answer=answer, session_id=session_id, llm_model=llm_model)
-
-    def link_question_to_section(self, question_id: str, section_id: str, rank: int, score: float):
-        """질문이 참조한 섹션 연결"""
-        with self.driver.session(database=self.database) as session:
-            session.run("""
-                MATCH (q:Question {id: $q_id})
-                MATCH (s:Section {section_id: $s_id})
-                MERGE (q)-[r:USED_SECTION]->(s)
-                SET r.rank = $rank, r.score = $score
-            """, q_id=question_id, s_id=section_id, rank=rank, score=score)
-
-    def get_question_sources(self, question_id: str) -> Dict:
-        """질문이 참조한 섹션 조회"""
-        with self.driver.session(database=self.database) as session:
-            result = session.run("""
-                MATCH (q:Question {id: $id})
-                OPTIONAL MATCH (q)-[r:USED_SECTION]->(s:Section)
-                RETURN q, collect({section: s, rank: r.rank, score: r.score}) as sources
-                ORDER BY r.rank
-            """, id=question_id)
-            record = result.single()
-            if record:
-                return {
-                    "question": dict(record["q"]),
-                    "sources": [
-                        {
-                            "section": dict(s["section"]) if s["section"] else None,
-                            "rank": s["rank"],
-                            "score": s["score"]
-                        }
-                        for s in record["sources"] if s["section"]
-                    ]
-                }
-            return None
-
-    def get_question_history(self, session_id: str = None, limit: int = 50) -> List[Dict]:
-        """질문 히스토리"""
-        query = "MATCH (q:Question)"
-        if session_id:
-            query += " WHERE q.session_id = $session_id"
-        query += """
-            OPTIONAL MATCH (q)-[:USED_SECTION]->(s:Section)
-            RETURN q, count(s) as sources_count
-            ORDER BY q.created_at DESC
-            LIMIT $limit
-        """
-
-        with self.driver.session(database=self.database) as session:
-            result = session.run(query, session_id=session_id, limit=limit)
-            return [{"question": dict(r["q"]), "sources_count": r["sources_count"]} for r in result]
-
-    # ═══════════════════════════════════════════════════════════════════════════
     # 통계
     # ═══════════════════════════════════════════════════════════════════════════
 
@@ -459,9 +389,8 @@ class Neo4jGraphStore:
                 OPTIONAL MATCH (s:Section) WITH docs, count(s) as sections
                 OPTIONAL MATCH (dt:DocumentType) WITH docs, sections, count(dt) as doc_types
                 OPTIONAL MATCH (c:Concept) WITH docs, sections, doc_types, count(c) as concepts
-                OPTIONAL MATCH (q:Question) WITH docs, sections, doc_types, concepts, count(q) as questions
-                OPTIONAL MATCH ()-[r]->() WITH docs, sections, doc_types, concepts, questions, count(r) as rels
-                RETURN docs, sections, doc_types, concepts, questions, rels
+                OPTIONAL MATCH ()-[r]->() WITH docs, sections, doc_types, concepts, count(r) as rels
+                RETURN docs, sections, doc_types, concepts, rels
             """)
             record = result.single()
             return {
@@ -469,7 +398,6 @@ class Neo4jGraphStore:
                 "sections": record["sections"] or 0,
                 "document_types": record["doc_types"] or 0,
                 "concepts": record["concepts"] or 0,
-                "questions": record["questions"] or 0,
                 "relationships": record["rels"] or 0
             }
 
@@ -582,34 +510,3 @@ def upload_document_to_graph(graph: Neo4jGraphStore, result: dict, filename: str
         doc_mentions = re.findall(r'(EQ-[A-Z]+-\d{5})', content, re.IGNORECASE)
         if doc_mentions:
             graph.link_section_mentions(section_id, list(set(doc_mentions)))
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Question 추적 헬퍼
-# ═══════════════════════════════════════════════════════════════════════════
-
-def track_rag_question(graph: Neo4jGraphStore, question_text: str,
-                      search_results: List[Dict], answer: str = None,
-                      session_id: str = None, llm_model: str = None) -> str:
-    """RAG 질문 추적"""
-    question_id = str(uuid.uuid4())
-
-    # Question 생성
-    graph.create_question(
-        question_id=question_id,
-        text=question_text,
-        answer=answer,
-        session_id=session_id,
-        llm_model=llm_model
-    )
-
-    # 검색 결과 연결
-    for rank, result in enumerate(search_results, start=1):
-        meta = result.get("metadata", {})
-        section_id = meta.get("section_id") or f"{meta.get('doc_id')}:{meta.get('clause_id')}"
-        score = result.get("similarity", result.get("score", 0))
-
-        if section_id:
-            graph.link_question_to_section(question_id, section_id, rank, float(score))
-
-    return question_id
