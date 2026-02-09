@@ -459,12 +459,24 @@ def upload_document_to_graph(graph: Neo4jGraphStore, result: dict, filename: str
         graph.create_concept(concept_id, name_kr, name_en, description)
 
     # Section 생성 및 멘션 수집
-    all_mentions = set()
+    # v8.7: 같은 clause_id의 청크들을 먼저 병합
+    from collections import defaultdict
+
+    # 1. clause_id별로 청크 그룹화
+    sections_by_clause = defaultdict(list)
     for chunk in result.get("chunks", []):
         meta = chunk.get("metadata", {})
         clause_id = meta.get("clause_id")
         if not clause_id:
             continue
+        sections_by_clause[clause_id].append(chunk)
+
+    # 2. 각 clause_id별로 하나의 Section 생성
+    all_mentions = set()
+    for clause_id, chunks in sections_by_clause.items():
+        # 첫 번째 청크의 메타데이터 사용 (모두 동일하므로)
+        first_chunk = chunks[0]
+        meta = first_chunk.get("metadata", {})
 
         # section_id는 문서ID:조항번호 형식으로 전역 고유하게
         section_id = f"{doc_id}:{clause_id}"
@@ -484,11 +496,31 @@ def upload_document_to_graph(graph: Neo4jGraphStore, result: dict, filename: str
             "language": meta.get("language", "ko"),
         }
 
+        # 같은 clause_id의 모든 청크 content 병합
+        # title은 모든 청크에 동일하므로 한 번만, content는 모두 합치기
+        title = meta.get("title", "")
+
+        # 각 청크에서 title을 제거하고 content만 추출
+        content_parts = []
+        for chunk in chunks:
+            text = chunk.get("text", "")
+            # title 제거 (title + "\n\n" + content 형식)
+            if text.startswith(title):
+                content_only = text[len(title):].strip()
+                if content_only.startswith("\n\n"):
+                    content_only = content_only[2:].strip()
+                content_parts.append(content_only)
+            else:
+                content_parts.append(text)
+
+        # 전체 content = title + 모든 content_parts
+        merged_content = f"{title}\n\n" + "\n\n".join(content_parts)
+
         graph.create_section(
             doc_id=doc_id,
             section_id=section_id,
-            title=meta.get("title", ""),
-            content=chunk.get("text", ""),
+            title=title,
+            content=merged_content,
             clause_level=meta.get("clause_level", 0),
             main_section=main_section,
             llm_meta=llm_meta
@@ -505,14 +537,15 @@ def upload_document_to_graph(graph: Neo4jGraphStore, result: dict, filename: str
             parent_section_id = f"{doc_id}:{parent_clause}"
             graph.create_section_hierarchy(parent_section_id, section_id)
 
-        # 타 문서/조항 언급 추출
-        content = chunk.get("text", "")
-        # 문서 ID 패턴 (EQ-SOP-00009, EQ-WI-00012 등)
-        doc_mentions = re.findall(r'(EQ-[A-Z]+-\d{5})', content, re.IGNORECASE)
-        if doc_mentions:
-            unique_mentions = list(set([m.upper() for m in doc_mentions]))
-            graph.link_section_mentions(section_id, unique_mentions)
-            all_mentions.update(unique_mentions)
+        # 타 문서/조항 언급 추출 (모든 청크에서)
+        for chunk in chunks:
+            content = chunk.get("text", "")
+            # 문서 ID 패턴 (EQ-SOP-00009, EQ-WI-00012 등)
+            doc_mentions = re.findall(r'(EQ-[A-Z]+-\d{5})', content, re.IGNORECASE)
+            if doc_mentions:
+                unique_mentions = list(set([m.upper() for m in doc_mentions]))
+                graph.link_section_mentions(section_id, unique_mentions)
+                all_mentions.update(unique_mentions)
 
     # [중요] 문서 단위의 REFERENCES 관계 생성
     # 조항 레벨의 MENTIONS뿐만 아니라 문서 자체의 관계를 맺어 거시적 영향도 분석 지원
