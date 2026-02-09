@@ -362,8 +362,16 @@ def call_model_node(state: SearchState):
 
     4. **Answer Generation**: Write a natural **plain text** answer in Korean based on verified information.
        - **MANDATORY**: For EVERY piece of information you use in your answer, add a hidden tag: [USE: 문서명 | 조항]
+       - **CRITICAL**: The clause number in the tag MUST match the [DATA_SOURCE] where you got that information
+       - **VERIFICATION PROCESS**:
+         1. Write a sentence using information from a [DATA_SOURCE]
+         2. Look at that specific [DATA_SOURCE] block to find the "해당 조항" field
+         3. Copy EXACTLY that clause number into your [USE: ...] tag
+         4. DO NOT use a different clause number from a different [DATA_SOURCE]
        - Place the tag immediately after using that information in your answer.
-       - Example: "작업지침서는 업무 지침 문서입니다.[USE: EQ-SOP-00001 | 5.1.3 제 3레벨(작업지침서(WI):]"
+       - Example: If [DATA_SOURCE] says "해당 조항: 5.1.3 제 3레벨(작업지침서(WI):", then use:
+         "작업지침서는 업무 지침 문서입니다.[USE: EQ-SOP-00001 | 5.1.3 제 3레벨(작업지침서(WI):]"
+       - Example WRONG: Using "5.2.2.2.2" when the information came from "5.1.3" → This is HALLUCINATION
        - ONLY sources with [USE: ...] tags will appear in the final [참고 문서] section.
        - If you don't tag a source, it will be excluded from references.
 
@@ -393,6 +401,13 @@ def call_model_node(state: SearchState):
     - [USE: ...] tags are hidden from the user - they're automatically removed and converted to the [참고 문서] section
     - You MUST tag every piece of information you use, otherwise it won't appear in references
     - Missing tags = missing references = user won't know which documents you used
+
+    [CRITICAL WARNING - AVOID HALLUCINATION]
+    - NEVER reuse the same clause number for multiple different pieces of information
+    - Each sentence should have its own [USE: ...] tag with the EXACT clause from the [DATA_SOURCE] it came from
+    - If you write 5 different sentences from 5 different [DATA_SOURCE] blocks, you must use 5 different clause numbers
+    - Using "5.2.2.2.2" for information that actually came from "5.1.3" is a CRITICAL ERROR
+    - When in doubt, CHECK the [DATA_SOURCE] block again to verify the clause number
     """
     
     # 시스템 프롬프트를 메시지 맨 앞에 삽입

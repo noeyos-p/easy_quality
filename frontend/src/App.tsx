@@ -26,12 +26,25 @@ interface DocumentMetadata {
   conversion_method?: string
 }
 
+interface EvaluationScore {
+  score: number
+  reasoning: string
+}
+
+interface EvaluationScores {
+  faithfulness?: EvaluationScore
+  groundness?: EvaluationScore
+  relevancy?: EvaluationScore
+  correctness?: EvaluationScore
+}
+
 interface ChatMessage {
   role: 'user' | 'assistant'
   content: string
   timestamp: Date
   thoughtProcess?: string
   thinkingTime?: number
+  evaluation_scores?: EvaluationScores
 }
 
 const API_URL = 'http://localhost:8000'
@@ -147,6 +160,7 @@ function App() {
           timestamp: new Date(),
           thoughtProcess: thought,
           thinkingTime: thinkingTime,
+          evaluation_scores: data.evaluation_scores,
         }
 
         setMessages(prev => [...prev, assistantMessage])
@@ -444,6 +458,61 @@ function App() {
 
                       {msg.thinkingTime && (
                         <div className="meta-info">Time: {msg.thinkingTime}s</div>
+                      )}
+
+                      {/* 평가 점수 */}
+                      {msg.evaluation_scores && (
+                        <div className="evaluation-section">
+                          <div
+                            className="evaluation-header"
+                            onClick={() => toggleSection(`eval-${index}`)}
+                          >
+                            <span className="chevron">
+                              {expandedSections.has(`eval-${index}`) ? '▼' : '▶'}
+                            </span>
+                            <span className="evaluation-title">평가 점수</span>
+                          </div>
+                          {expandedSections.has(`eval-${index}`) && (
+                            <div className="evaluation-content">
+                              {msg.evaluation_scores.faithfulness && (
+                                <div className="eval-metric">
+                                  <span className="eval-label">충실성 (Faithfulness):</span>
+                                  <span className={`eval-score score-${msg.evaluation_scores.faithfulness.score}`}>
+                                    {msg.evaluation_scores.faithfulness.score}/5
+                                  </span>
+                                  <div className="eval-reasoning">{msg.evaluation_scores.faithfulness.reasoning}</div>
+                                </div>
+                              )}
+                              {msg.evaluation_scores.groundness && (
+                                <div className="eval-metric">
+                                  <span className="eval-label">근거성 (Groundness):</span>
+                                  <span className={`eval-score score-${msg.evaluation_scores.groundness.score}`}>
+                                    {msg.evaluation_scores.groundness.score}/5
+                                  </span>
+                                  <div className="eval-reasoning">{msg.evaluation_scores.groundness.reasoning}</div>
+                                </div>
+                              )}
+                              {msg.evaluation_scores.relevancy && (
+                                <div className="eval-metric">
+                                  <span className="eval-label">관련성 (Relevancy):</span>
+                                  <span className={`eval-score score-${msg.evaluation_scores.relevancy.score}`}>
+                                    {msg.evaluation_scores.relevancy.score}/5
+                                  </span>
+                                  <div className="eval-reasoning">{msg.evaluation_scores.relevancy.reasoning}</div>
+                                </div>
+                              )}
+                              {msg.evaluation_scores.correctness && (
+                                <div className="eval-metric">
+                                  <span className="eval-label">정확성 (Correctness):</span>
+                                  <span className={`eval-score score-${msg.evaluation_scores.correctness.score}`}>
+                                    {msg.evaluation_scores.correctness.score}/5
+                                  </span>
+                                  <div className="eval-reasoning">{msg.evaluation_scores.correctness.reasoning}</div>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
                       )}
                     </div>
                   )}
