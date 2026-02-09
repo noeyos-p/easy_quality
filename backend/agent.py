@@ -288,6 +288,10 @@ class AgentState(TypedDict):
     worker_model: Optional[str]
     orchestrator_model: Optional[str]
     loop_count: int
+    # 추적 정보 (평가용)
+    agent_calls: Optional[Dict[str, int]]  # 에이전트별 호출 횟수
+    tool_calls_log: Optional[List[Dict[str, Any]]]  # 도구 호출 로그
+    validation_results: Optional[Dict[str, Any]]  # 검증 결과
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 노드 정의 (Nodes)
@@ -295,12 +299,17 @@ class AgentState(TypedDict):
 
 def orchestrator_node(state: AgentState):
     """메인 에이전트 (OpenAI GPT-4o-mini) - 질문 분석 및 라우팅"""
-    
-    # 무한 루프 방지: 2번 이상 반복하면 강제 종료
+
+    # 추적 정보 초기화
+    agent_calls = state.get("agent_calls") or {}
+    agent_calls["orchestrator"] = agent_calls.get("orchestrator", 0) + 1
+
+    # 무한 루프 방지: 4번 이상 반복하면 강제 종료
+    # (정상 흐름: retrieval -> orch -> graph -> orch -> answer 도 3회 필요)
     loop_count = state.get("loop_count", 0)
-    if loop_count >= 2:
+    if loop_count >= 4:
         print(f"🔴 루프 제한 도달 ({loop_count}회), 강제 종료")
-        return {"next_agent": "answer", "loop_count": loop_count + 1}
+        return {"next_agent": "answer", "loop_count": loop_count + 1, "agent_calls": agent_calls}
     
     client = get_openai_client()
     if not client:
@@ -314,22 +323,55 @@ def orchestrator_node(state: AgentState):
     [에이전트 목록]
     1. retrieval: 규정 검색, 정보 조회
     2. graph: 참조/인용 관계 확인 ("참조 목록", "영향 분석" 등)
-    3. comparison: 두 문서 간 비교 분석
+    3. answer: 답변 생성 및 종료
+    4. comparison: 두 문서 간 비교 분석
     
     [중요 종료 조건]
-    - 서브 에이전트의 답변이 충분하면 즉시 'finish' 선택
+    - 서브 에이전트의 답변이 충분하면 즉시 'answer' 선택
     - 동일 에이전트를 2회 이상 반복 호출 금지
-    
+
     [출력 형식]
-    JSON: {"next_action": "retrieval|graph|comparison|finish", "reason": "이유"}
+    JSON: {"next_agent": "retrieval|graph|answer", "reason": "이유"}
+
+    주의: next_agent 값은 반드시 "retrieval", "graph", "answer" 중 하나여야 합니다.
     """
-    
+
     current_context = state.get("context", [])
-    combined_context_str = "\n".join([f"- {c[:200]}..." for c in current_context]) if current_context else "없음"
-    
-    orchestrator_input = f"""수집된 보고서: {combined_context_str}
-    
-    충분한 정보가 수집되었다면 'finish'를 선택하세요."""
+
+    # 컨텍스트 요약 개선: [참고 문서] 섹션만 추출하여 메타데이터화
+    context_summaries = []
+    for i, c in enumerate(current_context, 1):
+        agent_type = "검색" if "검색 에이전트" in c else ("그래프" if "그래프 에이전트" in c else "서브")
+
+        # [참고 문서] 섹션 추출
+        ref_match = re.search(r'\[참고 문서\]\s*\n((?:- .+\n?)+)', c)
+        if ref_match:
+            # 문서명과 조항 파싱
+            ref_lines = ref_match.group(1).strip().split('\n')
+            doc_info = []
+            for line in ref_lines:
+                # 형식: - EQ-SOP-00001 (5.1.3, 5.2.2.2.2)
+                doc_match = re.match(r'-\s*([^\(]+)\s*\(([^\)]+)\)', line.strip())
+                if doc_match:
+                    doc_name = doc_match.group(1).strip()
+                    clauses = doc_match.group(2).strip()
+                    doc_info.append(f"{doc_name} ({clauses})")
+
+            if doc_info:
+                context_summaries.append(f"- [{agent_type} 에이전트] {', '.join(doc_info)} 수집 완료")
+            else:
+                context_summaries.append(f"- [{agent_type} 에이전트] 정보 수집 완료")
+        else:
+            # [참고 문서] 섹션이 없으면 첫 100자만 요약
+            summary = c[:100].replace('\n', ' ').strip()
+            context_summaries.append(f"- [{agent_type} 에이전트] {summary}...")
+
+    combined_context_str = "\n".join(context_summaries) if context_summaries else "없음"
+
+    orchestrator_input = f"""수집된 정보 요약:
+{combined_context_str}
+
+충분한 정보가 수집되었다면 'answer'를 선택하세요."""
 
     try:
         response = client.chat.completions.create(
@@ -344,17 +386,20 @@ def orchestrator_node(state: AgentState):
         )
         content = response.choices[0].message.content
         decision = safe_json_loads(content)
-        
-        next_action = decision.get("next_action", "finish")
-        
-        if next_action == "finish":
-            return {"next_agent": "answer", "loop_count": loop_count + 1}
-            
-        return {"next_agent": next_action, "loop_count": loop_count + 1}
-        
+
+        next_agent = decision.get("next_agent", "answer")
+
+        # 검증: 허용된 값만 통과 (state와 정확히 일치)
+        ALLOWED_AGENTS = {"retrieval", "graph", "answer"}
+        if next_agent not in ALLOWED_AGENTS:
+            print(f"🔴 잘못된 next_agent '{next_agent}' 감지, answer로 변경")
+            next_agent = "answer"
+
+        return {"next_agent": next_agent, "loop_count": loop_count + 1, "agent_calls": agent_calls}
+
     except Exception as e:
         print(f"Orchestrator Error: {e}")
-        return {"next_agent": "answer", "final_answer": "오류가 발생했습니다.", "loop_count": loop_count + 1}
+        return {"next_agent": "answer", "final_answer": "오류가 발생했습니다.", "loop_count": loop_count + 1, "agent_calls": agent_calls}
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 워크플로우 구성
@@ -431,7 +476,10 @@ def run_agent(query: str, session_id: str = "default", model_name: str = None, e
         "worker_model": model_name or "glm-4.7-flash",
         "orchestrator_model": "gpt-4o-mini",
         "model_name": model_name,
-        "loop_count": 0
+        "loop_count": 0,
+        "agent_calls": {},  # 에이전트 호출 추적
+        "tool_calls_log": [],  # Tool 호출 로그
+        "validation_results": {}  # 검증 결과
     }
 
     # LangGraph 실행
@@ -448,15 +496,84 @@ def run_agent(query: str, session_id: str = "default", model_name: str = None, e
 
     # context 추출 (평가용)
     context = result.get("context", [])
-    if isinstance(context, list):
-        context = "\n\n".join(context)
+    context_str = "\n\n".join(context) if isinstance(context, list) else context
+
+    # ========================================
+    # 평가 로그 생성 (agent_log)
+    # ========================================
+
+    # 1. 에이전트 호출 통계
+    agent_calls = result.get("agent_calls", {})
+
+    # 2. [USE: ...] 태그 분석
+    use_tags = re.findall(r'\[USE:\s*([^\|]+)\s*\|\s*([^\]]+)\]', final_answer)
+    use_tag_count = len(use_tags)
+
+    # 3. Tool 호출 로그 추출 (messages에서)
+    tool_calls_log = []
+    for msg in result.get("messages", []):
+        if isinstance(msg, dict) and msg.get("role") == "tool":
+            tool_calls_log.append({
+                "role": "tool",
+                "content_preview": msg.get("content", "")[:200]
+            })
+        elif hasattr(msg, "role") and msg.role == "tool":
+            content = msg.content if hasattr(msg, "content") else str(msg)
+            tool_calls_log.append({
+                "role": "tool",
+                "content_preview": content[:200]
+            })
+
+    # 4. 검증 결과 분석
+    validation_summary = {
+        "grounding": "unknown",
+        "format": "unknown",
+        "has_use_tags": use_tag_count > 0,
+        "no_info_found": False
+    }
+
+    # NO_INFO_FOUND 감지
+    if "검색된 문서 내에서 관련 정보를 찾을 수 없" in final_answer or \
+       "검색된 정보가 없습니다" in final_answer or \
+       "[NO_INFO_FOUND]" in final_answer:
+        validation_summary["no_info_found"] = True
+
+    # 5. 검색 조건 추출 (context에서)
+    search_conditions = []
+    for ctx in context:
+        # [Deep Search] 로그에서 검색 조건 추출 시도
+        if "Deep Search" in ctx or "검색" in ctx:
+            search_conditions.append({
+                "query": query,
+                "preview": ctx[:150]
+            })
 
     return {
         "answer": final_answer,
         "agent_log": {
-            "context": context,
+            # 기본 정보
+            "query": query,
+            "context": context_str,
             "next_agent": result.get("next_agent"),
-            "loop_count": result.get("loop_count", 0)
+            "loop_count": result.get("loop_count", 0),
+
+            # 에이전트 호출 통계
+            "agent_calls": agent_calls,
+            "total_agent_calls": sum(agent_calls.values()) if agent_calls else 0,
+
+            # Tool 호출 정보
+            "tool_calls_count": len(tool_calls_log),
+            "tool_calls_log": tool_calls_log[:5],  # 최대 5개만
+
+            # 태그 분석
+            "use_tag_count": use_tag_count,
+            "use_tags_sample": use_tags[:3] if use_tags else [],  # 샘플 3개
+
+            # 검증 결과
+            "validation_summary": validation_summary,
+
+            # 검색 조건
+            "search_conditions": search_conditions[:3]  # 최대 3개
         },
         "wrapper": True
     }

@@ -369,10 +369,10 @@ def search(
     vector = embed_text(query, model_name)
     collection = client.collections.get(actual_name)
     
-    # 필터 구성
+    # 필터 구성 (doc_id 사용)
     filters = None
     if filter_doc:
-        filters = Filter.by_property("doc_name").equal(filter_doc)
+        filters = Filter.by_property("doc_id").equal(filter_doc)
     
     # 쿼리 실행
     res = collection.query.near_vector(
@@ -440,10 +440,10 @@ def search_hybrid(
     vector = embed_text(query, model_name)
     collection = client.collections.get(actual_name)
     
-    # 필터 구성
+    # 필터 구성 (doc_id 사용)
     filters = None
     if filter_doc:
-        filters = Filter.by_property("doc_name").equal(filter_doc)
+        filters = Filter.by_property("doc_id").equal(filter_doc)
     
     # 쿼리 실행
     try:
