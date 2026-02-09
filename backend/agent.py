@@ -407,8 +407,17 @@ def comparison_agent_node(state: AgentState):
         comp_res = compare_versions_tool.invoke({"doc_id": info['id'], "v1": info['v1'], "v2": info['v2']})
         
         final_res = client.chat.completions.create(
-            model=state.get("worker_model") or state.get("model_name") or "glm-4.7-flash", # 동적 모델 적용
-            messages=[{"role": "user", "content": f"두 버전의 차이점을 분석해줘:\n{comp_res}"}]
+            model=state.get("worker_model") or state.get("model_name") or "glm-4.7-flash",
+            messages=[{"role": "user", "content": f"""두 버전의 차이점을 분석하여 보고서를 작성하세요.
+            
+            [분석 데이터]
+            {comp_res}
+            
+            [분석 규칙]
+            1. **STRICT GROUNDING**: 오직 [분석 데이터]에 명시된 텍스트 차이점만 서술하세요.
+            2. **NO INFERENCE**: 변경된 이유나 배경을 추측하지 마세요.
+            3. **조항별 정리**: 변경된 조항 번호와 구체적인 문구 변화를 불렛 포인트로 정리하세요.
+            4. **데이터 부재 시**: 만약 차이점이 없다면 "두 버전 사이에 차이점이 존재하지 않습니다"라고 보고하세요."""}]
         )
         content = final_res.choices[0].message.content
     except:

@@ -99,11 +99,14 @@ def graph_agent_node(state: AgentState):
     데이터: {json.dumps(ref_data, ensure_ascii=False)}
     
     [보고서 규칙]
+    - **STRICT GROUNDING**: 오직 제공된 `데이터` 내의 관계 정보만 분석하세요.
+    - **NO INFERENCE**: 문서 간의 관계가 데이터에 명시되지 않았다면 "관계를 알 수 없음"으로 보고하세요.
     - 질문의 의도({intent})에 맞춰 '영향'이나 '의존성'을 명확히 설명하세요.
     - '참조하는 문서(References)'는 상위 규정 또는 필수 참고서입니다.
     - '참조받는 문서(Cited By)'는 이 문서가 변경될 때 함께 업데이트되어야 할 대상입니다.
     - 전문적인 용어를 사용하되 불렛 포인트로 간결하게 정리하세요.
     - 한국어로 답변하세요.
+    - **EXTERNAL KNOWLEDGE PROHIBITED**: 일반적인 지식이나 상식에 기반한 문서 간 관계 추측을 엄격히 금지합니다.
     """
     
     analysis_res = client.chat.completions.create(
