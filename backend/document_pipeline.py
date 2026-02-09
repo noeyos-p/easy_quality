@@ -494,13 +494,13 @@ def create_chunks(clauses: List[Dict], doc_id: str, doc_title: str,
             meta = _default_metadata()
 
         # 2. 긴 조항 재분할 (벡터 검색 품질 향상)
-        # v8.3: 사용자의 요청에 따라 text 필드에는 순수 본문(content)만 포함
-        text_to_split = content
+        # v8.4: title을 text에 포함하여 제목 속 키워드도 검색 가능하게 함
+        text_to_split = f"{title}\n\n{content}"
         split_parts = _split_recursive(text_to_split, chunk_size, chunk_overlap)
-        
+
         for p_idx, part in enumerate(split_parts):
-            # v8.3: 필드 분리에 따라 text 필드에서는 중복된 제목 프리픽스 제거 (본문 중심 임베딩)
-            # 검색 엔진 레벨에서 clause, title 필드를 별도로 활용하므로 text는 순수 본문 위주로 구성
+            # v8.4: 제목과 본문을 모두 포함하여 검색 품질 향상
+            # 제목 속의 "상위 문서", "참조 문서" 등의 키워드도 검색 가능
             chunk_text = part
             
             # 최종 메타데이터
