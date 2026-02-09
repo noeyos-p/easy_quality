@@ -11,6 +11,7 @@ import re
 import json
 import operator
 import hashlib
+import difflib
 from typing import List, Dict, Optional, Any, Annotated, TypedDict, Literal
 from datetime import datetime
 
@@ -196,6 +197,30 @@ def search_sop_tool(query: str, extract_english: bool = False, keywords: List[st
     return "\n\n".join(results) if results else "검색 결과 없음. 검색어나 키워드를 바꿔보세요."
 
 @tool
+def get_version_history_tool(sop_id: str) -> str:
+    """특정 문서의 버전 히스토리를 조회"""
+    global _sql_store
+    if not _sql_store: return "SQL 저장소 연결 실패"
+    
+    versions = _sql_store.get_document_versions(sop_id)
+    if not versions: return f"{sop_id} 문서의 버전을 찾을 수 없습니다."
+    
+    return "\n".join([f"- v{v['version']} ({v['created_at']})" for v in versions])
+
+@tool
+def compare_versions_tool(doc_name: str, v1: str, v2: str) -> str:
+    """두 버전의 문서 내용을 비교하여 반환"""
+    global _sql_store
+    if not _sql_store: return ""
+    
+    doc1 = _sql_store.get_document_by_name(doc_name, v1)
+    doc2 = _sql_store.get_document_by_name(doc_name, v2)
+    
+    if not doc1 or not doc2: return "비교할 버전을 찾을 수 없습니다."
+    
+    return f"=== v{v1} ===\n{doc1.get('content')[:2000]}\n\n=== v{v2} ===\n{doc2.get('content')[:2000]}"
+
+@tool
 def get_references_tool(doc_id: str) -> str:
     """참조 관계 조회"""
     import json
@@ -256,7 +281,7 @@ def get_sop_headers_tool(doc_id: str) -> str:
 class AgentState(TypedDict):
     query: str
     messages: Annotated[List[Any], operator.add]
-    next_agent: Literal["retrieval", "graph", "answer", "end"]
+    next_agent: Literal["retrieval", "graph", "comparison", "answer", "end"]
     final_answer: str
     context: Annotated[List[str], operator.add]
     model_name: Optional[str]
@@ -289,13 +314,14 @@ def orchestrator_node(state: AgentState):
     [에이전트 목록]
     1. retrieval: 규정 검색, 정보 조회
     2. graph: 참조/인용 관계 확인 ("참조 목록", "영향 분석" 등)
+    3. comparison: 두 문서 간 비교 분석
     
     [중요 종료 조건]
     - 서브 에이전트의 답변이 충분하면 즉시 'finish' 선택
     - 동일 에이전트를 2회 이상 반복 호출 금지
     
     [출력 형식]
-    JSON: {"next_action": "retrieval|graph|finish", "reason": "이유"}
+    JSON: {"next_action": "retrieval|graph|comparison|finish", "reason": "이유"}
     """
     
     current_context = state.get("context", [])
@@ -338,6 +364,7 @@ def create_workflow():
     try:
         from backend.sub_agent.search import retrieval_agent_node as node_retrieval
         from backend.sub_agent.graph import graph_agent_node as node_graph
+        from backend.sub_agent.comparison import comparison_agent_node as node_comparison
         from backend.sub_agent.answer import answer_agent_node as node_answer
     except ImportError as e:
         error_msg = str(e)
@@ -345,6 +372,7 @@ def create_workflow():
         def error_node(state): return {"messages": [{"role": "assistant", "content": f"에이전트 로딩 에러: {error_msg}"}]}
         node_retrieval = error_node
         node_graph = error_node
+        node_comparison = error_node
         node_answer = error_node
 
     workflow = StateGraph(AgentState)
@@ -353,6 +381,7 @@ def create_workflow():
     workflow.add_node("orchestrator", orchestrator_node)
     workflow.add_node("retrieval", node_retrieval)
     workflow.add_node("graph", node_graph)
+    workflow.add_node("comparison", node_comparison)
     workflow.add_node("answer", node_answer)
     
     # Edges
@@ -368,6 +397,7 @@ def create_workflow():
         {
             "retrieval": "retrieval",
             "graph": "graph",
+            "comparison": "comparison",
             "answer": "answer",
             "end": END
         }
@@ -376,6 +406,7 @@ def create_workflow():
     # 서브 에이전트는 오케스트레이터로 돌아감
     workflow.add_edge("retrieval", "orchestrator")
     workflow.add_edge("graph", "orchestrator")
+    workflow.add_edge("comparison", "orchestrator")
     
     # 답변 에이전트는 종료
     workflow.add_edge("answer", END)
@@ -437,5 +468,6 @@ def run_agent(query: str, session_id: str = "default", model_name: str = None, e
 AGENT_TOOLS = [
     search_sop_tool,
     get_references_tool,
-    get_sop_headers_tool
+    get_sop_headers_tool,
+    compare_versions_tool
 ]
