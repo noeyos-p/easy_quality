@@ -20,7 +20,7 @@ from neo4j import GraphDatabase
 from typing import List, Dict, Optional
 import re
 import uuid
-
+import os
 
 class Neo4jGraphStore:
     """Neo4j 그래프 저장소"""
@@ -331,10 +331,10 @@ class Neo4jGraphStore:
         """문서 간 참조 관계"""
         with self.driver.session(database=self.database) as session:
             session.run("""
-                MATCH (from:Document {doc_id: $from})
-                MATCH (to:Document {doc_id: $to})
+                MATCH (from:Document {doc_id: $from_doc})
+                MATCH (to:Document {doc_id: $to_doc})
                 MERGE (from)-[:REFERENCES]->(to)
-            """, from_doc=from_doc, to=to_doc)
+            """, from_doc=from_doc, to_doc=to_doc)
 
     def link_section_mentions(self, section_id: str, mentioned_docs: List[str]):
         """섹션에서 언급한 문서들 연결 (Section -[:MENTIONS]-> Document)"""
@@ -458,7 +458,8 @@ def upload_document_to_graph(graph: Neo4jGraphStore, result: dict, filename: str
     for concept_id, name_kr, name_en, description in concepts:
         graph.create_concept(concept_id, name_kr, name_en, description)
 
-    # Section 생성
+    # Section 생성 및 멘션 수집
+    all_mentions = set()
     for chunk in result.get("chunks", []):
         meta = chunk.get("metadata", {})
         clause_id = meta.get("clause_id")
@@ -509,4 +510,13 @@ def upload_document_to_graph(graph: Neo4jGraphStore, result: dict, filename: str
         # 문서 ID 패턴 (EQ-SOP-00009, EQ-WI-00012 등)
         doc_mentions = re.findall(r'(EQ-[A-Z]+-\d{5})', content, re.IGNORECASE)
         if doc_mentions:
-            graph.link_section_mentions(section_id, list(set(doc_mentions)))
+            unique_mentions = list(set([m.upper() for m in doc_mentions]))
+            graph.link_section_mentions(section_id, unique_mentions)
+            all_mentions.update(unique_mentions)
+
+    # [중요] 문서 단위의 REFERENCES 관계 생성
+    # 조항 레벨의 MENTIONS뿐만 아니라 문서 자체의 관계를 맺어 거시적 영향도 분석 지원
+    for mentioned_doc in all_mentions:
+        if mentioned_doc != doc_id: # 자기 자신 참조 제외
+            graph.create_reference(doc_id, mentioned_doc)
+            print(f"  🔗 문서 레퍼런스 생성: {doc_id} -> {mentioned_doc}")

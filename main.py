@@ -421,7 +421,11 @@ async def upload_document(
                 graph_sections = stats.get("sections", 0)
                 print(f"  🟢 저장 완료: {graph_sections}개 섹션\n")
         except Exception as graph_error:
-            print(f"  🔴 연결 실패 (건너뜀)\n")
+            # [디버그 로그 보강] 연결 실패 시 구체적인 에러 메시지 출력
+            print(f"  🔴 Neo4j 연결 실패: {graph_error}")
+            import traceback
+            traceback.print_exc()
+            print(f"  ⚠ 그래프 연동을 건너뛰고 계속 진행합니다.\n")
         
         # ========================================
         # 완료
