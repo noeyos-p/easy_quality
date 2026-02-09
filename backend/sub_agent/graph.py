@@ -127,9 +127,18 @@ def graph_agent_node(state: AgentState):
         messages=[{"role": "user", "content": analysis_prompt}]
     )
 
-    # Mermaid 다이어그램 제거, 간단한 텍스트만 반환
-    final_report = analysis_res.choices[0].message.content.strip()
+    # Mermaid 다이어그램 추가 및 결과 조합
+    llm_analysis = analysis_res.choices[0].message.content.strip()
+    
+    final_report = f"""### [그래프 에이전트 관계 분석 보고]
 
-    # [중간 보고] 답변 에이전트가 사용할 수 있도록 context에 분석 내용 저장 (리스트 누적)
-    report = f"[그래프 에이전트 관계 분석 보고]\n\n{final_report}"
-    return {"context": [report]}
+{llm_analysis}
+
+#### 시각화 관계도 (Mermaid)
+```mermaid
+{mermaid_code}
+```
+
+[DONE]"""
+
+    return {"context": [final_report]}
