@@ -655,8 +655,8 @@ def process_document(
         if not version and use_llm_metadata:
             print("     [추출] 파일명에 버전 정보가 없어 본문 분석을 시작합니다...")
             try:
-                from backend.agent import get_zai_client
-                client = get_zai_client()
+                from backend.agent import get_openai_client
+                client = get_openai_client()
                 # 앞뒤 2000자 분석
                 sample_text = markdown[:2000] + "\n...\n" + markdown[-2000:]
                 prompt = f"""다음 GMP 문서 내용(개정 이력 포함)을 보고 이 문서의 '현재 버전'을 찾아내세요.
@@ -668,7 +668,7 @@ def process_document(
                 {sample_text}
                 """
                 res = client.chat.completions.create(
-                    model="glm-4.7-flash",
+                    model="gpt-4o-mini",
                     messages=[{"role": "user", "content": prompt}]
                 )
                 extracted_v = res.choices[0].message.content.strip()

@@ -1,13 +1,13 @@
 # import json
 # import re
 # from typing import Dict, List, Optional
-# from backend.agent import get_zai_client, compare_versions_tool, AgentState
+# from backend.agent import get_openai_client, compare_versions_tool, AgentState
 
 # def comparison_agent_node(state: AgentState):
 #     """[서브] 비교 에이전트 (ID/버전 추출 및 리포트 생성)"""
-#     client = get_zai_client()
+#     client = get_openai_client()
 #     query = state["query"]
-#     model = state.get("worker_model") or state.get("model_name") or "glm-4.7-flash"
+#     model = state.get("worker_model") or state.get("model_name") or "gpt-4o-mini"
     
 #     # 1. 문서명 및 버전 추출 (Regex)
 #     # 문서명 패턴: ABC-DEF-12345 or ABC-12345

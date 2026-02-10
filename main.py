@@ -1,11 +1,11 @@
 """
-RAG 챗봇 API v11.0 + Agent (Z.AI)
+RAG 챗봇 API v14.0 + Agent (OpenAI)
 
- v11.0 변경사항:
-- LLM 백엔드 변경: Ollama → Z.AI GLM-4.7-Flash
-- 에이전트 도구 성능 강화
+ v14.0 변경사항:
+- LLM 백엔드 변경: Z.AI → OpenAI GPT-4o-mini
+- 에이전트 시스템 통합 (모든 서브 에이전트 OpenAI 사용)
+- LLM as a Judge 평가 시스템 (RDB 검증 포함)
 - LangSmith 추적 지원 및 최적화
-- 되묻기 로직 제거 및 검색 결과 직접 출력
 """
 
 #  .env 파일 자동 로드 (다른 import보다 먼저!)
@@ -136,8 +136,8 @@ class ChatRequest(BaseModel):
     collection: str = "documents"
     n_results: int = DEFAULT_N_RESULTS
     embedding_model: str = "multilingual-e5-small"
-    llm_model: str = "qwen2.5:3b"
-    llm_backend: str = "ollama"
+    llm_model: str = "gpt-4o-mini"
+    llm_backend: str = "openai"
     filter_doc: Optional[str] = None
     similarity_threshold: Optional[float] = None
 
@@ -147,8 +147,8 @@ class AskRequest(BaseModel):
     collection: str = "documents"
     n_results: int = DEFAULT_N_RESULTS
     embedding_model: str = "multilingual-e5-small"
-    llm_model: str = "glm-4.7-flash"
-    llm_backend: str = "zai"  #  기본값 zai로 변경
+    llm_model: str = "gpt-4o-mini"
+    llm_backend: str = "openai"  #  기본값 openai로 변경
     temperature: float = 0.7
     filter_doc: Optional[str] = None
     language: str = "ko"
@@ -524,8 +524,11 @@ def chat(request: ChatRequest):
             elif is_error_message:
                 print("평가 생략: 에러 메시지")
             else:
-                # 평가 실행
-                evaluator = AgentEvaluator(judge_model="gpt-4o-mini")
+                # 평가 실행 (RDB 검증 필수!)
+                evaluator = AgentEvaluator(
+                    judge_model="gpt-4o-mini",
+                    sql_store=sql_store  # ✅ RDB 검증을 위해 필수 전달
+                )
 
                 # context 추출 (agent_log에서)
                 context = response.get("agent_log", {}).get("context", "")
@@ -542,14 +545,23 @@ def chat(request: ChatRequest):
                 # 로그 출력
                 if evaluation_scores:
                     print(f"\n{'='*60}")
-                    print(f"평가 결과")
+                    print(f"평가 결과 (평균: {evaluation_scores.get('average_score', 0)}/5)")
                     print(f"{'='*60}")
                     for metric, result in evaluation_scores.items():
+                        # average_score는 건너뜀 (float이므로 .get() 메서드 없음)
+                        if metric == "average_score":
+                            continue
+
                         score = result.get("score", 0)
                         reasoning = result.get("reasoning", "")
                         print(f"\n[{metric.upper()}]")
                         print(f"  점수: {score}/5")
                         print(f"  이유: {reasoning}")
+
+                        # RDB 검증 결과 출력
+                        if "rdb_verification" in result:
+                            rdb = result["rdb_verification"]
+                            print(f"  📊 RDB 검증: 정확도 {rdb.get('accuracy_rate', 0)}% ({rdb.get('verified_citations', 0)}/{rdb.get('total_citations', 0)})")
                     print(f"{'='*60}\n")
 
         except ImportError:
@@ -913,7 +925,7 @@ class AgentRequest(BaseModel):
     """에이전트 요청"""
     message: str
     session_id: Optional[str] = None
-    llm_model: str = "glm-4.7-flash"
+    llm_model: str = "gpt-4o-mini"
     embedding_model: str = "multilingual-e5-small" # 추가
     n_results: int = DEFAULT_N_RESULTS #  추가
     use_langgraph: bool = True  # LangGraph 에이전트 사용 여부
@@ -1031,6 +1043,61 @@ def test_echo(request: SimpleRequest):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# API 엔드포인트 - LLM as a Judge 평가
+# ═══════════════════════════════════════════════════════════════════════════
+
+class EvaluationRequest(BaseModel):
+    """평가 요청 모델"""
+    question: str
+    answer: str
+    context: Optional[str] = ""
+    metrics: Optional[List[str]] = None  # ["faithfulness", "groundness", "relevancy", "correctness"]
+    reference_answer: Optional[str] = None
+
+@app.post("/evaluate")
+def evaluate_answer(request: EvaluationRequest):
+    """
+    🔍 LLM as a Judge - 답변 평가 (RDB 검증 포함)
+
+    평가 메트릭:
+    - faithfulness: 컨텍스트 충실성 (환각 방지)
+    - groundness: 근거 명확성
+    - relevancy: 질문 관련성
+    - correctness: 정확성과 완전성
+
+    **무조건 RDB에서 실제 문서를 조회하여 인용 정확성 검증**
+    """
+    try:
+        from backend.evaluation import AgentEvaluator
+
+        # RDB 검증을 위해 sql_store 필수 전달
+        evaluator = AgentEvaluator(
+            judge_model="gpt-4o-mini",
+            sql_store=sql_store
+        )
+
+        # 평가 실행
+        results = evaluator.evaluate_single(
+            question=request.question,
+            answer=request.answer,
+            context=request.context,
+            metrics=request.metrics,
+            reference_answer=request.reference_answer
+        )
+
+        return {
+            "success": True,
+            "evaluation": results,
+            "average_score": results.get("average_score", 0)
+        }
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(500, f"평가 실행 실패: {str(e)}")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # 서버 실행
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -1056,9 +1123,9 @@ def main():
     import uvicorn
     
     print("\n" + "=" * 60)
-    print(" RAG Chatbot API v11.0 + Z.AI Agent")
+    print(" RAG Chatbot API v14.0 + OpenAI Agent")
     print("=" * 60)
-    print(f" LLM 백엔드: {' Z.AI (GLM-4.7-Flash)' if ZaiLLM.is_available() else ' ZAI_API_KEY 설정 필요'}")
+    print(f" LLM 백엔드: OpenAI (GPT-4o-mini)")
     print(f" 에이전트: {' 활성화' if AGENT_AVAILABLE else ' 비활성화'}")
     
     if AGENT_AVAILABLE:

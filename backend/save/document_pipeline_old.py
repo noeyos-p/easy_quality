@@ -1,7 +1,7 @@
 """
 LangGraph 기반 문서 처리 파이프라인 v9.1
 
-🔥 v9.1 개선:
+v9.1 개선:
 - 페이지 번호 메타데이터 추가
 - Parent-Child 계층 구조 도입
 - 문서 헤더 메타데이터 추출 (SOP ID, Version, Date, Department)
@@ -124,7 +124,7 @@ def extract_document_metadata(text: str, filename: str) -> Dict:
         json_match = re.search(r'\{.*\}', llm_res, re.DOTALL)
         if json_match:
             llm_meta = json.loads(json_match.group(0))
-            # 🔥 호환성 레이어: doc_id를 sop_id로도 복사
+            # 호환성 레이어: doc_id를 sop_id로도 복사
             if 'doc_id' in llm_meta and 'sop_id' not in llm_meta:
                 llm_meta['sop_id'] = llm_meta['doc_id']
             metadata.update(llm_meta)
@@ -139,7 +139,7 @@ def extract_clause_metadata(text: str, doc_info: Dict, section_name: str) -> Dic
     """
     조항(Clause) 단위 상세 메타데이터 추출 (processor 방식)
     """
-    # 🔥 너무 짧은 내용은 분석 스킵
+    # 너무 짧은 내용은 분석 스킵
     clean_text = text.strip()
     if len(clean_text) < 30:
         return {}
@@ -181,7 +181,7 @@ JSON만 출력:
     try:
         # GPT-4o-mini: 빠르고 정확한 조항별 메타데이터 JSON 추출
         llm_res = get_llm_response(prompt, llm_model="gpt-4o-mini", max_tokens=4096, temperature=0.1)
-        # 🔥 processor 방식: JSON 파싱
+        # processor 방식: JSON 파싱
         result_text = llm_res.strip()
 
         # JSON 코드 블록 처리
@@ -240,7 +240,7 @@ def node_load(state: PipelineState) -> PipelineState:
     filename = state["filename"]
     content = state["content"]
     
-    # 🔥 실제 확장자 추출 (마지막 . 이후)
+    # 실제 확장자 추출 (마지막 . 이후)
     filename_lower = filename.lower()
     if '.' in filename_lower:
         actual_ext = filename_lower.rsplit('.', 1)[-1]
@@ -296,9 +296,9 @@ def node_convert(state: PipelineState) -> PipelineState:
         elif file_type == 'pdf':
             markdown, metadata, method = _convert_pdf_with_fallback(filename, content)
             state["conversion_method"] = method
-            # 🔥 V22.9 Global Noise Filter: 헤더 추론 및 분할 전 전체 문서 클리닝
+            # V22.9 Global Noise Filter: 헤더 추론 및 분할 전 전체 문서 클리닝
             markdown = _clean_noise_globally(markdown)
-            # 🔥 PDF는 헤더 추론 필수!
+            # PDF는 헤더 추론 필수!
             markdown = _infer_headers(markdown)
             state["conversion_method"] += "+infer-headers"
             
@@ -322,7 +322,7 @@ def node_convert(state: PipelineState) -> PipelineState:
             state["conversion_method"] = "fallback-text"
             state["warnings"] = [f"알 수 없는 파일 타입: {file_type}, 텍스트로 처리"]
         
-        # 🔥 문서 메타데이터 추출 (옵션)
+        # 문서 메타데이터 추출 (옵션)
         if state.get("use_llm_metadata", False):
             doc_meta = extract_document_metadata(markdown, filename)
             metadata.update(doc_meta)
@@ -377,7 +377,7 @@ def node_validate(state: PipelineState) -> PipelineState:
     """
     markdown = state.get("markdown", "")
     
-    # 🔥 [최적화] 변환이 완료되었으므로 대용량 바이너리 데이터는 삭제 (UI 속도 향상)
+    # [최적화] 변환이 완료되었으므로 대용량 바이너리 데이터는 삭제 (UI 속도 향상)
     if markdown and "content" in state:
         state["content"] = b"" # 메모리 및 UI 렌더링 부하 감소
     
@@ -703,7 +703,7 @@ def node_split(state: PipelineState) -> PipelineState:
             effective_markdown = markdown[anchor_idx:]
 
     if use_clause_parsing:
-        print("   🔍 [AI Map] AI를 사용하여 조항 지도를 생성 중...")
+        print("   [AI Map] AI를 사용하여 조항 지도를 생성 중...")
         # AI가 본문 전체를 훑으며 조항의 위치(앵커)를 찾습니다.
         structure = discover_structure_with_llm(effective_markdown)
         
@@ -727,7 +727,7 @@ def node_split(state: PipelineState) -> PipelineState:
                 
                 content = effective_markdown[start_pos:end_pos].strip()
                 
-                # 🔥 [V22.6 Content Purity] 반복적인 SOP 헤더/푸터 및 메타데이터 제거
+                # [V22.6 Content Purity] 반복적인 SOP 헤더/푸터 및 메타데이터 제거
                 junk_patterns = [
                     r'Number:\s*EQ-SOP-\d+.*',
                     r'Version:\s*\d+\.\d+.*',
@@ -745,7 +745,7 @@ def node_split(state: PipelineState) -> PipelineState:
                 title = item.get("title", "Untitled").strip()
                 level = item.get("level", 0)
                 
-                # 🔥 [V22.7 Title Refinement] 문장형 제목 감지 및 정규화 (Heuristics)
+                # [V22.7 Title Refinement] 문장형 제목 감지 및 정규화 (Heuristics)
                 # 1. 문장 종결 어미 체크 (다., 함., 임. 등)
                 is_sentence = any(title.endswith(x) for x in ["다.", "함.", "임.", "요.", "다", "함", "임"])
                 # 2. 한국어 조사 포함 여부 (는, 은, 이, 가, 를, 을 - 주어나 목적어가 있는 문장일 확률 높음)
@@ -759,7 +759,7 @@ def node_split(state: PipelineState) -> PipelineState:
                         content = f"{title}\n\n{content}"
                     title = f"조항 {clause_num}"
                 
-                # 🔥 [Junk Merging] 조항 번호가 없고 제목이 너무 길면(50자 이상) 본문 파편으로 간주하여 병합
+                # [Junk Merging] 조항 번호가 없고 제목이 너무 길면(50자 이상) 본문 파편으로 간주하여 병합
                 if not clause_num and len(title) > 50:
                     if sections:
                         # 이전 섹션에 내용 추가
@@ -767,7 +767,7 @@ def node_split(state: PipelineState) -> PipelineState:
                         print(f"   🩹 [Merge] 파편섹션('{title[:20]}...')을 이전 조항에 병합했습니다.")
                         continue
                 
-                # 🔥 [V22.8 Sub-split] AI가 놓친 세부 조항(2.2 등)이 본문 중간에 섞여있는지 정규식으로 한 번 더 체크
+                # [V22.8 Sub-split] AI가 놓친 세부 조항(2.2 등)이 본문 중간에 섞여있는지 정규식으로 한 번 더 체크
                 sub_sections = []
                 if clause_num and "." in clause_num:
                     # 현재 조항 번호 형식을 기반으로 비슷한 패턴 탐색 (예: 2.1 -> 2.2, 2.3 등)
@@ -911,7 +911,7 @@ def node_optimize(state: PipelineState) -> PipelineState:
     chunks = []
     idx = 0
     
-    # 🔥 문서 레벨 메타데이터
+    # 문서 레벨 메타데이터
     doc_id = doc_meta.get("doc_id")
     doc_title = doc_meta.get("title")
     version = doc_meta.get("version")
@@ -944,7 +944,7 @@ def node_optimize(state: PipelineState) -> PipelineState:
         section["current_title"] = current_section_title
         section["clause_level"] = clause_level
 
-        # 🔥 조항별 상세 메타데이터 추출 (AI) - 순차 처리로 복구
+        # 조항별 상세 메타데이터 추출 (AI) - 순차 처리로 복구
         # 제목이 있고, 조항 번호가 있으며, 본문이 100자 이상인 경우에만 분석
         clause_meta = {}
         section_idx = sections.index(section) + 1
@@ -958,7 +958,7 @@ def node_optimize(state: PipelineState) -> PipelineState:
                 print(f"   📋 [{section_idx}/{len(sections)}] 조항 저장: {clause_id} {current_section_title[:30] if current_section_title else ''}...")
 
         section["clause_meta"] = clause_meta
-        idx += 1 # 🔥 다음 섹션을 위해 인덱스 증가 (누락 방지)
+        idx += 1 # 다음 섹션을 위해 인덱스 증가 (누락 방지)
 
     # 2단계: 최적화 및 청크 생성
     for section in sections:
@@ -982,7 +982,7 @@ def node_optimize(state: PipelineState) -> PipelineState:
             
             section_id = f"{doc_id}:{clause_id}" if clause_id else f"{doc_id}:CH{idx}"
             
-            # 🔥 고도화된 메타데이터 구조 (V22.0)
+            # 고도화된 메타데이터 구조 (V22.0)
             meta = {
                 "doc_id": doc_id,
                 "doc_title": doc_title,
@@ -1152,7 +1152,7 @@ def _convert_pdf_with_fallback(filename: str, content: bytes) -> tuple:
                     md_lines.append(text)
                     total_text_len += len(text.strip())
         
-        # 🔥 실제 텍스트가 의미 있는 수준(예: 50자) 이상일 때만 성공으로 간주
+        # 실제 텍스트가 의미 있는 수준(예: 50자) 이상일 때만 성공으로 간주
         if total_text_len > 50:
             return '\n'.join(md_lines), {"parser": "pdfplumber", "total_pages": len(pdf.pages)}, "pdfplumber"
         print(f"   ⚠️ pdfplumber: 텍스트 추출 부족 ({total_text_len}자). 다른 파서 시도...")
@@ -1217,9 +1217,9 @@ def _convert_pdf_with_fallback(filename: str, content: bytes) -> tuple:
     except Exception as e:
         print(f"   PyPDF2 실패: {e}")
     
-    # 5순위: 🔥 OCR Fallback (스캔본/이미지 PDF용)
+    # 5순위: OCR Fallback (스캔본/이미지 PDF용)
     try:
-        print("   🔍 스캔 문서 감지: OCR(광학 문자 인식) 엔진 가동 중...")
+        print("   스캔 문서 감지: OCR(광학 문자 인식) 엔진 가동 중...")
         markdown, metadata = _convert_pdf_ocr(content)
         if len(markdown.strip()) > 50:
             return markdown, {**metadata, "parser": "ocr"}, "ocr"
@@ -1331,7 +1331,7 @@ def _clean_noise_globally(markdown: str) -> str:
     if not markdown:
         return ""
     
-    # 🔥 [V22.12] 문서 끝부분 감지 및 제거 (개정이력, 승인정보)
+    # [V22.12] 문서 끝부분 감지 및 제거 (개정이력, 승인정보)
     end_markers = [
         '문서개정이력',
         'Document Revision History',
@@ -1430,7 +1430,7 @@ def _infer_headers(markdown: str) -> str:
                      'Purpose', 'Scope', 'Definitions', 'Responsibilities', 'Procedure', 
                      'Reference', 'Attachments']
     
-    # 🔥 무시할 패턴 (페이지 번호 등) - 텍스트는 유지하되 헤더로 안 만듦
+    # 무시할 패턴 (페이지 번호 등) - 텍스트는 유지하되 헤더로 안 만듦
     ignore_patterns = [
         r'^\d+\s+of\s+\d+$',
         r'^Page\s+\d+',
@@ -1496,7 +1496,7 @@ def _infer_headers(markdown: str) -> str:
         # "목적으로 한다" 같은 일반 문장 방어
         matched = False
         for section in main_sections:
-            # 🔥 [핵심] 숫자+공백+키워드 형태만 헤더로 인정 (예: "1 목적")
+            # [핵심] 숫자+공백+키워드 형태만 헤더로 인정 (예: "1 목적")
             # 순수 키워드만 있는 경우는 이미 위에서 "5 xxx" 패턴으로 처리됨
             pattern = rf'^(\d+)\s+{re.escape(section)}(\s+|:|$)'
             if re.match(pattern, stripped) and len(stripped) < 50:
@@ -1665,7 +1665,7 @@ def process_document(
         
         if debug:
             print(f"\n{'='*60}")
-            print(f"📊 LangGraph 파이프라인 결과")
+            print(f"LangGraph 파이프라인 결과")
             print(f"{'='*60}")
             print(f"   파일: {filename}")
             print(f"   변환 방법: {result.get('conversion_method')}")
@@ -1704,7 +1704,7 @@ def _simple_pipeline(state: PipelineState, debug: bool = False) -> dict:
     state = node_finalize(state)
     
     if debug:
-        print(f"\n📊 심플 파이프라인 결과: {len(state.get('chunks', []))} 청크")
+        print(f"\n심플 파이프라인 결과: {len(state.get('chunks', []))} 청크")
     
     return state
 
@@ -1730,4 +1730,4 @@ def state_to_chunks(state: dict) -> List[Chunk]:
 # ═══════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
-    print("🔥 document_pipeline v9.1 테스트")
+    print("document_pipeline v9.1 테스트")

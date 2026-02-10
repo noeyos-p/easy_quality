@@ -29,9 +29,19 @@ interface DocumentMetadata {
   conversion_method?: string
 }
 
+interface RDBVerification {
+  has_citations: boolean
+  total_citations: number
+  verified_citations: number
+  incorrect_citations: string[]
+  accuracy_rate: number
+  verification_details: string
+}
+
 interface EvaluationScore {
   score: number
   reasoning: string
+  rdb_verification?: RDBVerification
 }
 
 interface EvaluationScores {
@@ -39,6 +49,7 @@ interface EvaluationScores {
   groundness?: EvaluationScore
   relevancy?: EvaluationScore
   correctness?: EvaluationScore
+  average_score?: number
 }
 
 interface ChatMessage {
@@ -139,7 +150,7 @@ function App() {
         body: JSON.stringify({
           message: messageToSend,
           session_id: sessionId,
-          llm_model: 'glm-4.7-flash', // 서브 에이전트용 기본값
+          llm_model: 'gpt-4o-mini', // OpenAI 모델
         }),
       })
 
@@ -156,6 +167,9 @@ function App() {
 
         // Agent 로그가 있으면 사고 과정으로 표시
         const thought = data.agent_log ? JSON.stringify(data.agent_log, null, 2) : "Agent reasoning..."
+
+        // 디버깅: evaluation_scores 확인
+        console.log('🔍 Evaluation Scores:', data.evaluation_scores)
 
         const assistantMessage: ChatMessage = {
           role: 'assistant',
@@ -497,7 +511,12 @@ function App() {
                             <span className="chevron">
                               {expandedSections.has(`eval-${index}`) ? '▼' : '▶'}
                             </span>
-                            <span className="evaluation-title">평가 점수</span>
+                            <span className="evaluation-title">
+                              🔍 평가 점수
+                              {msg.evaluation_scores.average_score && (
+                                <span className="eval-average"> ({msg.evaluation_scores.average_score.toFixed(1)}/5.0)</span>
+                              )}
+                            </span>
                           </div>
                           {expandedSections.has(`eval-${index}`) && (
                             <div className="evaluation-content">
@@ -508,6 +527,33 @@ function App() {
                                     {msg.evaluation_scores.faithfulness.score}/5
                                   </span>
                                   <div className="eval-reasoning">{msg.evaluation_scores.faithfulness.reasoning}</div>
+                                  {msg.evaluation_scores.faithfulness.rdb_verification && (
+                                    <div className="rdb-verification">
+                                      <div className="rdb-header">📊 RDB 검증 결과</div>
+                                      <div className="rdb-stats">
+                                        <span className="rdb-stat">
+                                          정확도: <strong>{msg.evaluation_scores.faithfulness.rdb_verification.accuracy_rate}%</strong>
+                                        </span>
+                                        <span className="rdb-stat">
+                                          검증됨: {msg.evaluation_scores.faithfulness.rdb_verification.verified_citations}/{msg.evaluation_scores.faithfulness.rdb_verification.total_citations}
+                                        </span>
+                                      </div>
+                                      {msg.evaluation_scores.faithfulness.rdb_verification.incorrect_citations.length > 0 && (
+                                        <div className="rdb-errors">
+                                          <strong>⚠️ 틀린 인용:</strong>
+                                          <ul>
+                                            {msg.evaluation_scores.faithfulness.rdb_verification.incorrect_citations.map((citation, i) => (
+                                              <li key={i}>{citation}</li>
+                                            ))}
+                                          </ul>
+                                        </div>
+                                      )}
+                                      <details className="rdb-details">
+                                        <summary>상세 검증 결과</summary>
+                                        <pre>{msg.evaluation_scores.faithfulness.rdb_verification.verification_details}</pre>
+                                      </details>
+                                    </div>
+                                  )}
                                 </div>
                               )}
                               {msg.evaluation_scores.groundness && (
@@ -517,6 +563,15 @@ function App() {
                                     {msg.evaluation_scores.groundness.score}/5
                                   </span>
                                   <div className="eval-reasoning">{msg.evaluation_scores.groundness.reasoning}</div>
+                                  {msg.evaluation_scores.groundness.rdb_verification && (
+                                    <div className="rdb-verification">
+                                      <div className="rdb-stats">
+                                        <span className="rdb-stat">
+                                          정확도: <strong>{msg.evaluation_scores.groundness.rdb_verification.accuracy_rate}%</strong>
+                                        </span>
+                                      </div>
+                                    </div>
+                                  )}
                                 </div>
                               )}
                               {msg.evaluation_scores.relevancy && (
@@ -535,6 +590,15 @@ function App() {
                                     {msg.evaluation_scores.correctness.score}/5
                                   </span>
                                   <div className="eval-reasoning">{msg.evaluation_scores.correctness.reasoning}</div>
+                                  {msg.evaluation_scores.correctness.rdb_verification && (
+                                    <div className="rdb-verification">
+                                      <div className="rdb-stats">
+                                        <span className="rdb-stat">
+                                          정확도: <strong>{msg.evaluation_scores.correctness.rdb_verification.accuracy_rate}%</strong>
+                                        </span>
+                                      </div>
+                                    </div>
+                                  )}
                                 </div>
                               )}
                             </div>

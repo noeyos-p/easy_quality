@@ -24,6 +24,7 @@ python-docx
 # === LangChain + LangGraph ===
 langchain
 langchain-core
+langchain-openai
 langchain-community
 langgraph
 
