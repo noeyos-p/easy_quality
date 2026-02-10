@@ -10,7 +10,8 @@ import json
 import hashlib
 import operator
 from typing import List, Dict, Any, Optional, Literal, Annotated, TypedDict
-from backend.agent import get_zai_client, AgentState, search_sop_tool, get_sop_headers_tool, safe_json_loads, normalize_doc_id
+from backend.agent import get_openai_client, AgentState, search_sop_tool, get_sop_headers_tool, safe_json_loads, normalize_doc_id
+from langsmith import traceable
 from langchain_core.tools import tool
 from langsmith import traceable
 from langgraph.graph import StateGraph, START, END
@@ -22,7 +23,7 @@ from langgraph.graph import StateGraph, START, END
 _vector_store = None
 _sql_store = None
 _graph_store = None
-_zai_client = None
+_openai_client = None
 
 def init_search_stores(vector_store_module=None, sql_store_instance=None, graph_store_instance=None):
     """검색 에이전트용 스토어 초기화"""
@@ -31,13 +32,13 @@ def init_search_stores(vector_store_module=None, sql_store_instance=None, graph_
     _sql_store = sql_store_instance
     _graph_store = graph_store_instance
 
-def get_zai_client():
-    """Z.AI 클라이언트 반환"""
-    global _zai_client
-    if not _zai_client:
-        from backend.agent import get_zai_client as get_main_zai
-        _zai_client = get_main_zai()
-    return _zai_client
+def get_openai_client():
+    """OpenAI 클라이언트 반환"""
+    global _openai_client
+    if not _openai_client:
+        from backend.agent import get_openai_client as get_main_openai
+        _openai_client = get_main_openai()
+    return _openai_client
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 핵심 검색 로직
@@ -330,9 +331,10 @@ class SearchState(TypedDict):
 # 노드 및 도구 설정
 # ═══════════════════════════════════════════════════════════════════════════
 
+@traceable(name="search_agent_llm_call", run_type="llm")
 def call_model_node(state: SearchState):
     """LLM이 질문을 분석하고 도구 호출 여부를 결정함 (자율 계획)"""
-    client = get_zai_client()
+    client = get_openai_client()
     messages = state["messages"]
     
     # Deep search system prompt (English for better LLM comprehension)
@@ -463,15 +465,18 @@ def call_model_node(state: SearchState):
         }
     ]
     
-    res = client.chat.completions.create(
-        model=state["model"],
-        messages=full_messages,
-        tools=tools,
-        tool_choice="auto",
-        temperature=0.0  # 완전 결정론적 - [USE: ...] 태그 누락 방지
-    )
-    
-    return {"messages": [res.choices[0].message]}
+    # 디버깅: 모델 확인
+    model_to_use = state["model"]
+    print(f"[DEBUG call_model_node] Using model: {model_to_use}")
+
+    # LangChain ChatOpenAI 사용 (tools 바인딩) - LangSmith 자동 추적
+    from backend.agent import get_langchain_llm
+    llm = get_langchain_llm(model=model_to_use, temperature=0.0)
+    llm_with_tools = llm.bind(tools=tools, tool_choice="auto")
+
+    res = llm_with_tools.invoke(full_messages)
+
+    return {"messages": [res]}
 
 def tool_executor_node(state: SearchState):
     """LLM이 요청한 도구를 실행하고 결과를 메시지에 추가함"""
@@ -480,22 +485,31 @@ def tool_executor_node(state: SearchState):
     
     tool_outputs = []
     for tc in tool_calls:
-        if tc.function.name == "search_documents_tool":
-            # safe_json_loads를 통해 강인한 파싱 수행
-            args = safe_json_loads(tc.function.arguments)
-            
-            query = args.get("query")
-            keywords = args.get("keywords", [])
-            target_clause = args.get("target_clause")
-            
+        # LangChain과 OpenAI API 호환성 처리
+        if isinstance(tc, dict):
+            # LangChain 형식 (dict)
+            tool_name = tc.get("name")
+            tool_args = tc.get("args", {})
+            tool_id = tc.get("id")
+        else:
+            # OpenAI API 형식 (객체)
+            tool_name = tc.function.name
+            tool_args = safe_json_loads(tc.function.arguments)
+            tool_id = tc.id
+
+        if tool_name == "search_documents_tool":
+            query = tool_args.get("query")
+            keywords = tool_args.get("keywords", [])
+            target_clause = tool_args.get("target_clause")
+
             # v8.4: 문서 ID 정규화 (eEQ- -> EQ-)
-            target_doc_id = normalize_doc_id(args.get("target_doc_id"))
-            
+            target_doc_id = normalize_doc_id(tool_args.get("target_doc_id"))
+
             print(f"    [Deep Search] 도구 호출: '{query}' (키워드: {keywords}, 타겟조항: {target_clause}, 타겟문서: {target_doc_id or '전체'})")
-            
+
             results = search_documents_internal(query=query, keywords=keywords, target_clause=target_clause, target_doc_id=target_doc_id)
             print(f"    [Deep Search] 검색 결과 {len(results)}건 발견")
-            
+
             formatted_results = []
             for r in results:
                 doc_name = r.get('doc_name', '알 수 없는 문서')
@@ -508,13 +522,13 @@ def tool_executor_node(state: SearchState):
                     f"본문 내용: {content}\n"
                     f"[END_SOURCE]"
                 )
-            
+
             content = "\n\n".join(formatted_results)
             if not content: content = "검색 결과가 없습니다."
-            
+
             tool_outputs.append({
                 "role": "tool",
-                "tool_call_id": tc.id,
+                "tool_call_id": tool_id,
                 "content": content
             })
             
@@ -655,10 +669,16 @@ def retrieval_agent_node(state: Dict[str, Any]) -> Dict[str, Any]:
 
     print(f" [Deep Search] 정밀 검색 가동: {state['query']}")
 
+    # 디버깅: state 확인
+    worker_model = state.get("worker_model")
+    model_name = state.get("model_name")
+    final_model = worker_model or model_name or "gpt-4o-mini"
+    print(f"[DEBUG retrieval] worker_model={worker_model}, model_name={model_name}, final={final_model}")
+
     initial_state = {
         "messages": [{"role": "user", "content": state["query"]}],
         "query": state["query"],
-        "model": state.get("worker_model") or state.get("model_name") or "glm-4.7-flash",
+        "model": final_model,
         "final_answer": ""
     }
 

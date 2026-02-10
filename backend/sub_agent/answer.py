@@ -44,9 +44,9 @@ def answer_agent_node(state: AgentState):
             if clean_clause and '.' in clean_clause and clean_clause[0].isdigit():
                 doc_clauses[doc_name].add(clean_clause)
             else:
-                print(f"🔍 [참고문서 필터링] 제외됨: {doc_name} > {clean_clause} (조항 형식 불일치)")
+                print(f"[참고문서 필터링] 제외됨: {doc_name} > {clean_clause} (조항 형식 불일치)")
         else:
-            print(f"🔍 [참고문서 필터링] 제외됨: {doc_name} > {clause_info} (조항 번호 없음)")
+            print(f"[참고문서 필터링] 제외됨: {doc_name} > {clause_info} (조항 번호 없음)")
 
         # 인라인 인용 제거 - 빈 문자열 반환
         return ""

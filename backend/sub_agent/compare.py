@@ -7,7 +7,8 @@
 
 import json
 from typing import Optional
-from backend.agent import get_zai_client, AgentState, safe_json_loads
+from backend.agent import get_openai_client, get_langchain_llm, AgentState, safe_json_loads
+from langsmith import traceable
 # 순환 참조 방지를 위해 직접 Store 사용
 from backend.sql_store import SQLStore
 from backend.graph_store import Neo4jGraphStore
@@ -22,39 +23,40 @@ def normalize_version(v: Optional[str]) -> Optional[str]:
         return f"{v_str}.0"
     return v_str
 
+@traceable(name="comparison_agent", run_type="chain")
 def comparison_agent_node(state: AgentState):
     """[서브] 비교 에이전트 - 버전 목록 조회 또는 내용 비교 분석"""
-    print(f"🔵 [COMPARISON AGENT] 진입! query={state.get('query')}")
-    client = get_zai_client()
+    print(f"[COMPARISON AGENT] 진입! query={state.get('query')}")
     query = state["query"]
-    model = state.get("worker_model") or state.get("model_name") or "glm-4.7-flash"
-    
-    # 1. 의도 분석 (Z.AI 활용)
+    model = state.get("worker_model") or state.get("model_name") or "gpt-4o-mini"
+
+    # 1. 의도 분석 (LangChain ChatOpenAI 사용 - LangSmith 자동 추적)
     # 사용자가 버전 목록을 보고 싶어하는지, 아니면 실제 내용 비교를 원하는지 구분
     intent_prompt = f"""사용자의 질문을 분석하여 의도(Intent)와 필요한 정보를 추출하세요.
     - 질문: {query}
-    
+
     [의도 분류]
     - list_history: 특정 문서의 버전 목록(히스토리)이 보고 싶을 때 (예: 버전 종류, 히스토리, 이력 등)
     - compare_versions: 두 버전 간의 내용을 구체적으로 비교하고 싶을 때. "최신 버전과 변경 내용", "차이점" 등을 물어보면 이에 해당합니다.
-    
+
     반드시 JSON 형식으로만 답변하세요:
     {{"intent": "list_history" 또는 "compare_versions", "doc_id": "문서ID", "v1": "버전1(없으면 null)", "v2": "버전2(없으면 null)"}}
     """
-    
+
     try:
-        res = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": intent_prompt}],
-            response_format={"type": "json_object"}
-        )
-        info = safe_json_loads(res.choices[0].message.content)
+        # LangChain ChatOpenAI 사용 (JSON 응답)
+        llm = get_langchain_llm(model=model, temperature=0.0)
+        llm = llm.bind(response_format={"type": "json_object"})
+
+        res = llm.invoke([{"role": "user", "content": intent_prompt}])
+
+        info = safe_json_loads(res.content)
         intent = info.get("intent")
         doc_id = info.get("doc_id")
         v1 = normalize_version(info.get("v1"))
         v2 = normalize_version(info.get("v2"))
-        
-        print(f"👉 비교 의도: {intent}, 문서: {doc_id}, 버전: {v1} vs {v2}")
+
+        print(f"비교 의도: {intent}, 문서: {doc_id}, 버전: {v1} vs {v2}")
 
         # [CASE 1] 버전 목록 조회
         if intent == "list_history":
@@ -186,11 +188,11 @@ def comparison_agent_node(state: AgentState):
             """
             
             try:
-                res = client.chat.completions.create(
-                    model=model,
-                    messages=[{"role": "user", "content": analysis_prompt}]
-                )
-                final_report = res.choices[0].message.content
+                # LangChain ChatOpenAI 사용
+                llm = get_langchain_llm(model=model, temperature=0.0)
+                res = llm.invoke([{"role": "user", "content": analysis_prompt}])
+
+                final_report = res.content
                 return {"context": [final_report + " [DONE]"]}
             except Exception as e:
                 return {"context": [f"### [비교 보고서 생성 실패]\nLLM 호출 중 오류가 발생했습니다: {e} [DONE]"]}

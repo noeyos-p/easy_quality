@@ -1,11 +1,11 @@
 """
-RAG 챗봇 API v11.0 + Agent (Z.AI)
+RAG 챗봇 API v14.0 + Agent (OpenAI)
 
- v11.0 변경사항:
-- LLM 백엔드 변경: Ollama → Z.AI GLM-4.7-Flash
-- 에이전트 도구 성능 강화
+ v14.0 변경사항:
+- LLM 백엔드 변경: Z.AI → OpenAI GPT-4o-mini
+- 에이전트 시스템 통합 (모든 서브 에이전트 OpenAI 사용)
+- LLM as a Judge 평가 시스템 (RDB 검증 포함)
 - LangSmith 추적 지원 및 최적화
-- 되묻기 로직 제거 및 검색 결과 직접 출력
 """
 
 #  .env 파일 자동 로드 (다른 import보다 먼저!)
@@ -136,8 +136,8 @@ class ChatRequest(BaseModel):
     collection: str = "documents"
     n_results: int = DEFAULT_N_RESULTS
     embedding_model: str = "multilingual-e5-small"
-    llm_model: str = "qwen2.5:3b"
-    llm_backend: str = "ollama"
+    llm_model: str = "gpt-4o-mini"
+    llm_backend: str = "openai"
     filter_doc: Optional[str] = None
     similarity_threshold: Optional[float] = None
 
@@ -147,8 +147,8 @@ class AskRequest(BaseModel):
     collection: str = "documents"
     n_results: int = DEFAULT_N_RESULTS
     embedding_model: str = "multilingual-e5-small"
-    llm_model: str = "glm-4.7-flash"
-    llm_backend: str = "zai"  #  기본값 zai로 변경
+    llm_model: str = "gpt-4o-mini"
+    llm_backend: str = "openai"  #  기본값 openai로 변경
     temperature: float = 0.7
     filter_doc: Optional[str] = None
     language: str = "ko"
@@ -925,7 +925,7 @@ class AgentRequest(BaseModel):
     """에이전트 요청"""
     message: str
     session_id: Optional[str] = None
-    llm_model: str = "glm-4.7-flash"
+    llm_model: str = "gpt-4o-mini"
     embedding_model: str = "multilingual-e5-small" # 추가
     n_results: int = DEFAULT_N_RESULTS #  추가
     use_langgraph: bool = True  # LangGraph 에이전트 사용 여부
@@ -1123,9 +1123,9 @@ def main():
     import uvicorn
     
     print("\n" + "=" * 60)
-    print(" RAG Chatbot API v11.0 + Z.AI Agent")
+    print(" RAG Chatbot API v14.0 + OpenAI Agent")
     print("=" * 60)
-    print(f" LLM 백엔드: {' Z.AI (GLM-4.7-Flash)' if ZaiLLM.is_available() else ' ZAI_API_KEY 설정 필요'}")
+    print(f" LLM 백엔드: OpenAI (GPT-4o-mini)")
     print(f" 에이전트: {' 활성화' if AGENT_AVAILABLE else ' 비활성화'}")
     
     if AGENT_AVAILABLE:

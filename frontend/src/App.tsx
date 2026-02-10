@@ -147,7 +147,7 @@ function App() {
         body: JSON.stringify({
           message: messageToSend,
           session_id: sessionId,
-          llm_model: 'glm-4.7-flash', // 서브 에이전트용 기본값
+          llm_model: 'gpt-4o-mini', // OpenAI 모델
         }),
       })
 
