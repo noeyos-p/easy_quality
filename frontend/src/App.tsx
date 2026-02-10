@@ -1,4 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
+import MermaidRenderer from './components/MermaidRenderer'
 import './App.css'
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -467,7 +470,31 @@ function App() {
 
                       {/* 답변 본문 */}
                       <div className="response-body">
-                        {msg.content}
+                        <ReactMarkdown
+                          remarkPlugins={[remarkGfm]}
+                          components={{
+                            code({ node, inline, className, children, ...props }: any) {
+                              const match = /language-(\w+)/.exec(className || '')
+                              const language = match ? match[1] : ''
+
+                              if (!inline && language === 'mermaid') {
+                                return <MermaidRenderer chart={String(children).replace(/\n$/, '')} />
+                              }
+
+                              return !inline ? (
+                                <pre className={className}>
+                                  <code {...props}>{children}</code>
+                                </pre>
+                              ) : (
+                                <code className={className} {...props}>
+                                  {children}
+                                </code>
+                              )
+                            }
+                          }}
+                        >
+                          {msg.content}
+                        </ReactMarkdown>
                       </div>
 
                       {msg.thinkingTime && (

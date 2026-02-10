@@ -7,9 +7,9 @@
 
 import json
 from typing import Optional
+from backend.agent import get_zai_client, get_version_history_tool, AgentState, safe_json_loads
 from backend.agent import get_openai_client, get_langchain_llm, AgentState, safe_json_loads
 from langsmith import traceable
-# 순환 참조 방지를 위해 직접 Store 사용
 from backend.sql_store import SQLStore
 from backend.graph_store import Neo4jGraphStore
 
@@ -61,12 +61,7 @@ def comparison_agent_node(state: AgentState):
         # [CASE 1] 버전 목록 조회
         if intent == "list_history":
             print(f"[DEBUG] list_history 분기 실행")
-            store = SQLStore()
-            versions = store.get_document_versions(doc_id)
-            if not versions:
-                history = f"{doc_id} 문서의 버전을 찾을 수 없습니다."
-            else:
-                history = "\n".join([f"- v{v['version']} ({v['created_at']})" for v in versions])
+            history = get_version_history_tool.invoke({"doc_id": doc_id})
             return {"context": [f"### [{doc_id} 버전 이력]\n{history} [DONE]"]}
 
         # [CASE 2] 버전 비교
@@ -97,49 +92,46 @@ def comparison_agent_node(state: AgentState):
 
             # 실제 비교 데이터 조회 (SQL Diff) 및 검증
             print(f"[DEBUG] SQL Diff 조회 시작: {doc_id}, v1={v1}, v2={v2}")
+            # [Hybrid] 실제 비교 데이터 조회 (SQL Store 직접 호출)
+            print(f"[DEBUG] SQLStore 상세 Diff 조회 시작: {doc_id}, v1={v1}, v2={v2}")
             try:
-                store = SQLStore()
-                diffs = store.get_clause_diff(doc_id, v1, v2)
+                sql_store = SQLStore()
+                diffs = sql_store.get_clause_diff(doc_id, v1, v2)
 
-                # 디버그: 반환된 diff 확인
-                print(f"[DEBUG] 총 diff 개수: {len(diffs)}")
-                for d in diffs[:10]:  # 최대 10개만 출력
-                    print(f"  - {d.get('clause', 'N/A')}: {d.get('change_type', 'N/A')}")
-                
-                # [Safety Check] "ADDED"로 표시된 항목이 v1.0 본문 어딘가에 숨어있는지 전수 조사
-                added_items = [d for d in diffs if d['change_type'] == 'ADDED']
+                # [Safety Check] "ADDED"로 표시된 항목이 v1.0 본문에 이미 있었는지 전수 조사
+                # (도구 방식에서는 JSON 전달 문제로 누락될 수 있는 정밀 로직)
+                added_items = [d for d in diffs if d.get('change_type') == 'ADDED']
                 if added_items:
-                    # v1.0 문서의 모든 청크를 가져와서 하나의 텍스트로 합침
-                    v1_doc = store.get_document_by_name(doc_id, v1)
+                    v1_doc = sql_store.get_document_by_name(doc_id, v1)
                     if v1_doc:
-                        v1_chunks = store.get_chunks_by_document(v1_doc['id'])
+                        v1_chunks = sql_store.get_chunks_by_document(v1_doc['id'])
                         v1_full_text = "".join([c['content'] for c in v1_chunks]).replace(" ", "").replace("\n", "")
                         
                         for item in diffs:
-                            if item['change_type'] == 'ADDED':
-                                item_content_norm = (item['v2_content'] or "").replace(" ", "").replace("\n", "")
+                            if item.get('change_type') == 'ADDED':
+                                item_content_norm = (item.get('v2_content') or "").replace(" ", "").replace("\n", "")
                                 if len(item_content_norm) > 10 and item_content_norm in v1_full_text:
                                      item['change_type'] = 'UNCHANGED' 
 
-                # 보고서용 데이터 포맷팅 (Strict Filter: MODIFIED ONLY)
+                # 보고서용 데이터 포맷팅 (MODIFIED ONLY)
                 comp_lines = []
                 for item in diffs:
-                    if item['change_type'] == 'MODIFIED':
-                        clause_id = item['clause'] or "N/A"
-                        v1_txt = (item['v1_content'] or "").strip()
-                        v2_txt = (item['v2_content'] or "").strip()
+                    if item.get('change_type') == 'MODIFIED':
+                        clause_id = item.get('clause') or "N/A"
+                        v1_txt = (item.get('v1_content') or "").strip()
+                        v2_txt = (item.get('v2_content') or "").strip()
                         if v1_txt.replace(" ", "").replace("\n", "") != v2_txt.replace(" ", "").replace("\n", ""):
                             comp_lines.append(f"- [수정됨] 조항 {clause_id}: {v1_txt[:50]}... -> {v2_txt[:50]}...")
 
                 comp_data = "\n".join(comp_lines)
                 if not comp_data:
-                    comp_data = "텍스트 내용이 변경된 조항이 감지되지 않았습니다. (단순 서식 변경이나 파싱 차이일 수 있습니다)."
+                    comp_data = "텍스트 내용이 변경된 조항이 감지되지 않았습니다."
                     
             except Exception as e:
-                 print(f"[DEBUG compare.py] Diff 조회 실패: {e}")
-                 return {"context": [f"### [비교 에이전트 오류]\n데이터 조회 중 오류가 발생했습니다: {str(e)}"]}
-
-            # 영향 분석 조회 (Graph Impact) - 직접 GraphStore 사용
+                 print(f"[DEBUG compare.py] SQL 상세 조회 실패: {e}")
+                 comp_data = "데이터 비교 중 조항 정보를 가져오지 못했습니다."
+            
+            # [Hybrid] 영향 분석 조회 (Neo4j Store 직접 호출)
             try:
                 graph_store = Neo4jGraphStore()
                 graph_store.connect()
@@ -149,7 +141,7 @@ def comparison_agent_node(state: AgentState):
                 else:
                     impact_data = json.dumps(impacts, ensure_ascii=False, indent=2)
             except Exception as e:
-                print(f"[DEBUG compare.py] Impact 조회 실패: {e}")
+                print(f"[DEBUG compare.py] Graph 직접 조회 실패: {e}")
                 impact_data = "영향 분석 데이터를 가져오는 중 오류가 발생했습니다."
 
             if not diffs: 

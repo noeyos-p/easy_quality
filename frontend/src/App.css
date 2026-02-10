@@ -500,6 +500,39 @@ body {
   white-space: pre-wrap;
 }
 
+/* 마크다운 테이블 스타일 추가 */
+.response-body table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 16px 0;
+  font-size: 13px;
+}
+
+.response-body th, .response-body td {
+  border: 1px solid var(--border);
+  padding: 8px 12px;
+  text-align: left;
+}
+
+.response-body th {
+  background: var(--bg-lighter);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.response-body tr:nth-child(even) {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.mermaid-container {
+  background: #252526;
+  border-radius: 8px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  display: flex;
+  justify-content: center;
+}
+
 /* 입력 영역 */
 .agent-input-area {
   border-top: 1px solid var(--border);
