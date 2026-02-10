@@ -87,6 +87,11 @@ def comparison_agent_node(state: AgentState):
             try:
                 store = SQLStore()
                 diffs = store.get_clause_diff(doc_id, v1, v2)
+
+                # 디버그: 반환된 diff 확인
+                print(f"[DEBUG] 총 diff 개수: {len(diffs)}")
+                for d in diffs[:10]:  # 최대 10개만 출력
+                    print(f"  - {d.get('clause', 'N/A')}: {d.get('change_type', 'N/A')}")
                 
                 # [Safety Check] "ADDED"로 표시된 항목이 v1.0 본문 어딘가에 숨어있는지 전수 조사
                 added_items = [d for d in diffs if d['change_type'] == 'ADDED']

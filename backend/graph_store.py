@@ -328,11 +328,13 @@ class Neo4jGraphStore:
     # ═══════════════════════════════════════════════════════════════════════════
 
     def create_reference(self, from_doc: str, to_doc: str):
-        """문서 간 참조 관계"""
+        """문서 간 참조 관계 (참조된 문서가 없으면 자동 생성)"""
         with self.driver.session(database=self.database) as session:
             session.run("""
-                MATCH (from:Document {doc_id: $from_doc})
-                MATCH (to:Document {doc_id: $to_doc})
+                MERGE (from:Document {doc_id: $from_doc})
+                ON CREATE SET from.title = $from_doc, from.version = "", from.effective_date = "", from.owning_dept = ""
+                MERGE (to:Document {doc_id: $to_doc})
+                ON CREATE SET to.title = $to_doc, to.version = "", to.effective_date = "", to.owning_dept = ""
                 MERGE (from)-[:REFERENCES]->(to)
             """, from_doc=from_doc, to_doc=to_doc)
 
@@ -531,8 +533,9 @@ def upload_document_to_graph(graph: Neo4jGraphStore, result: dict, filename: str
         doc_type_kr = "양식"
         doc_type_en = "Form"
 
-    # Document 생성
-    graph.create_document(doc_id=doc_id, title=title, version="1.0")
+    # Document 생성 (버전 정보는 result에서 추출)
+    version = result.get("version") or "1.0"
+    graph.create_document(doc_id=doc_id, title=title, version=version)
 
     # DocumentType 생성 및 연결
     if doc_type_code:
@@ -656,3 +659,4 @@ def upload_document_to_graph(graph: Neo4jGraphStore, result: dict, filename: str
         if mentioned_doc != doc_id: # 자기 자신 참조 제외
             graph.create_reference(doc_id, mentioned_doc)
             print(f"  🔗 문서 레퍼런스 생성: {doc_id} -> {mentioned_doc}")
+
