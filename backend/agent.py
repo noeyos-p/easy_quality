@@ -25,7 +25,8 @@ try:
     from openai import OpenAI
     from langchain_openai import ChatOpenAI
 except ImportError:
-    pass
+    OpenAI = None
+    ChatOpenAI = None
 
 try:
     from zai import ZaiClient
@@ -116,6 +117,8 @@ _langchain_llm = None
 
 def get_langchain_llm(model: str = "gpt-4o-mini", temperature: float = 0.0):
     """LangChain ChatOpenAI 반환 (LangSmith 추적용)"""
+    if ChatOpenAI is None:
+        raise ImportError("langchain-openai 패키지가 설치되지 않았거나 로드할 수 없습니다.")
     return ChatOpenAI(
         model=model,
         temperature=temperature,

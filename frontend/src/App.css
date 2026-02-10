@@ -497,7 +497,35 @@ body {
   font-size: 14px;
   line-height: 1.7;
   color: var(--text-primary);
-  white-space: pre-wrap;
+  /* white-space: pre-wrap; <- 제거: 마크다운 렌더링 시 레이아웃 깨짐 유발 가능성 */
+}
+
+/* 마크다운 리스트 스타일 최적화 */
+.response-body ol,
+.response-body ul {
+  padding-left: 0;
+  margin: 12px 0;
+  list-style-position: inside;
+  /* 번호가 본문 안으로 들어와 드래그 가능해짐 */
+}
+
+.response-body li {
+  margin-bottom: 8px;
+}
+
+/* 번호와 제목 사이의 거대한 간격 제거 */
+.response-body li>p,
+.response-body li>div {
+  display: inline;
+  /* 번호 바로 옆에 텍스트가 붙도록 설정 */
+}
+
+.response-body p {
+  margin-bottom: 12px;
+}
+
+.response-body p:last-child {
+  margin-bottom: 0;
 }
 
 /* 마크다운 테이블 스타일 추가 */
@@ -508,7 +536,8 @@ body {
   font-size: 13px;
 }
 
-.response-body th, .response-body td {
+.response-body th,
+.response-body td {
   border: 1px solid var(--border);
   padding: 8px 12px;
   text-align: left;
@@ -670,10 +699,14 @@ body {
 }
 
 @keyframes typing {
-  0%, 60%, 100% {
+
+  0%,
+  60%,
+  100% {
     transform: translateY(0);
     opacity: 0.4;
   }
+
   30% {
     transform: translateY(-6px);
     opacity: 1;
@@ -715,69 +748,70 @@ body {
    ═══════════════════════════════════════════════════════════════════════════ */
 
 .modal-overlay {
-    position: fixed;
-    top: 0;
-    left: 0;
-    width: 100vw;
-    height: 100vh;
-    background: rgba(0, 0, 0, 0.7);
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    z-index: 9999; /* 최상위 */
-    backdrop-filter: blur(2px);
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  background: rgba(0, 0, 0, 0.7);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 9999;
+  /* 최상위 */
+  backdrop-filter: blur(2px);
 }
 
 .modal-content {
-    background: var(--bg-darker);
-    border: 1px solid var(--border);
-    padding: 24px;
-    border-radius: 8px;
-    width: 400px;
-    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
-    display: flex;
-    flex-direction: column;
-    gap: 16px;
+  background: var(--bg-darker);
+  border: 1px solid var(--border);
+  padding: 24px;
+  border-radius: 8px;
+  width: 400px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
 }
 
 .modal-content h3 {
-    margin: 0;
-    color: var(--text-primary);
-    font-size: 16px;
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 16px;
 }
 
 .modal-content input[type="file"] {
-    color: var(--text-primary);
-    padding: 8px;
-    border: 1px dashed var(--border);
-    border-radius: 4px;
+  color: var(--text-primary);
+  padding: 8px;
+  border: 1px dashed var(--border);
+  border-radius: 4px;
 }
 
 .modal-actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: 12px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
 }
 
 .modal-actions button {
-    padding: 8px 16px;
-    border-radius: 4px;
-    cursor: pointer;
-    font-size: 13px;
-    border: 1px solid var(--border);
-    background: var(--bg-lighter);
-    color: var(--text-primary);
-    transition: all 0.2s;
+  padding: 8px 16px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  border: 1px solid var(--border);
+  background: var(--bg-lighter);
+  color: var(--text-primary);
+  transition: all 0.2s;
 }
 
 .modal-actions button:hover {
-    background: var(--bg-hover);
-    border-color: var(--accent);
+  background: var(--bg-hover);
+  border-color: var(--accent);
 }
 
 .modal-actions button:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
