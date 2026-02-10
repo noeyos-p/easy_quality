@@ -133,7 +133,7 @@ def graph_agent_node(state: AgentState):
     # LangChain ChatOpenAI 사용
     llm = get_langchain_llm(model=model, temperature=0.0)
     analysis_res = llm.invoke([{"role": "user", "content": analysis_prompt}])
-    llm_analysis = analysis_res.choices[0].message.content.strip()
+    llm_analysis = analysis_res.content.strip()
     final_report = f"""### [그래프 에이전트 관계 분석 보고]
 
 {llm_analysis}
