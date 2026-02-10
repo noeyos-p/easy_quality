@@ -6,29 +6,42 @@ LLM as a Judge - 에이전트 응답 평가 모듈
 - groundness: 답변이 실제 근거에 기반하고 있는지
 - relevancy: 답변이 질문과 관련이 있는지
 - correctness: 답변이 정확하고 완전한지
+
+특징:
+- **무조건 RDB(PostgreSQL)에서 실제 문서를 조회하여 인용 정확성 검증**
+- [참고 문서] 섹션의 조항 번호가 실제로 존재하는지 DB에서 확인
+- 인라인 인용 (문서명 > 조항)도 검증
 """
 
 import os
 import json
-from typing import Dict, List, Optional
+import re
+from typing import Dict, List, Optional, Tuple
 from openai import OpenAI
 
 
 class AgentEvaluator:
-    """LLM as a Judge를 사용한 에이전트 응답 평가기"""
+    """LLM as a Judge를 사용한 에이전트 응답 평가기 (RDB 검증 필수)"""
 
-    def __init__(self, judge_model: str = "gpt-4o-mini"):
+    def __init__(self, judge_model: str = "gpt-4o-mini", sql_store=None):
         """
         Args:
-            judge_model: 평가에 사용할 LLM 모델 (기본: gpt-4o-mini)
+            judge_model: 평가에 사용할 LLM 모델
+            sql_store: SQL 데이터베이스 스토어 (실제 문서 검증용 - 필수!)
         """
+        if not sql_store:
+            raise ValueError("sql_store는 필수입니다. RDB에서 문서를 검증해야 합니다.")
+
         self.judge_model = judge_model
+        self.sql_store = sql_store
+
         api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
             raise ValueError("OPENAI_API_KEY 환경 변수가 설정되지 않았습니다.")
+
         self.client = OpenAI(api_key=api_key)
 
-    def _call_judge(self, prompt: str) -> Dict[str, any]:
+    def _call_judge(self, prompt: str) -> Dict:
         """Judge LLM 호출"""
         try:
             response = self.client.chat.completions.create(
@@ -42,273 +55,279 @@ class AgentEvaluator:
             print(f"🔴 Judge 호출 실패: {e}")
             return {"score": 0, "reasoning": f"평가 실패: {str(e)}"}
 
-    def evaluate_faithfulness(self, question: str, answer: str, context: str) -> Dict[str, any]:
+    def _extract_all_citations(self, answer: str) -> List[Tuple[str, str]]:
+        """
+        답변에서 모든 인용 추출 (RDB 검증용)
+
+        Returns:
+            [(doc_id, clause_num), ...]
+            예: [("EQ-SOP-00001", "5.1.3"), ("EQ-SOP-00002", "3.2")]
+        """
+        citations = []
+
+        # 1. [참고 문서] 섹션: EQ-SOP-00001(5.1.3, 5.4.2)
+        ref_pattern = r'\[참고 문서\](.*?)(?:\[DONE\]|$)'
+        ref_match = re.search(ref_pattern, answer, re.DOTALL)
+
+        if ref_match:
+            ref_section = ref_match.group(1).strip()
+            # 문서 ID와 조항 파싱
+            doc_pattern = r'([A-Z]+-[A-Z]+-\d+)\s*\(([^)]+)\)'
+            for match in re.finditer(doc_pattern, ref_section):
+                doc_id = match.group(1)
+                clauses_str = match.group(2)
+                clauses = [c.strip() for c in clauses_str.split(',')]
+                for clause in clauses:
+                    # 조항 번호만 추출 (숫자.숫자 형식)
+                    clause_match = re.match(r'([\d\.]+)', clause)
+                    if clause_match:
+                        citations.append((doc_id, clause_match.group(1)))
+
+        # 2. 인라인 인용: (EQ-SOP-00001 > 3.1)
+        inline_pattern = r'\(([A-Z]+-[A-Z]+-\d+)\s*>\s*([\d\.]+)'
+        for match in re.finditer(inline_pattern, answer):
+            doc_id = match.group(1)
+            clause_num = match.group(2)
+            citations.append((doc_id, clause_num))
+
+        # 3. 마크다운 강조 인용: **[EQ-SOP-00001 > 3.1]**
+        markdown_pattern = r'\*\*\[([A-Z]+-[A-Z]+-\d+)\s*>\s*([\d\.]+)'
+        for match in re.finditer(markdown_pattern, answer):
+            doc_id = match.group(1)
+            clause_num = match.group(2)
+            citations.append((doc_id, clause_num))
+
+        # 중복 제거 (순서 유지)
+        seen = set()
+        unique_citations = []
+        for doc_id, clause_num in citations:
+            key = (doc_id, clause_num)
+            if key not in seen:
+                seen.add(key)
+                unique_citations.append((doc_id, clause_num))
+
+        return unique_citations
+
+    def _verify_against_rdb(self, answer: str) -> Dict:
+        """
+        **핵심: RDB에서 실제 문서를 조회하여 답변 검증**
+
+        Returns:
+            {
+                "has_citations": bool,
+                "total_citations": int,
+                "verified_citations": int,
+                "incorrect_citations": List[str],
+                "accuracy_rate": float,
+                "verification_details": str
+            }
+        """
+        # 답변에서 모든 인용 추출
+        citations = self._extract_all_citations(answer)
+
+        if not citations:
+            return {
+                "has_citations": False,
+                "total_citations": 0,
+                "verified_citations": 0,
+                "incorrect_citations": [],
+                "accuracy_rate": 0.0,
+                "verification_details": "❌ 인용 없음 - 답변에 문서 근거가 명시되지 않음"
+            }
+
+        total_citations = len(citations)
+        verified_citations = 0
+        incorrect_citations = []
+        details = []
+
+        # 각 인용을 RDB에서 검증
+        for doc_id, clause_num in citations:
+            try:
+                # RDB에서 문서 조회 (최신 버전)
+                doc = self.sql_store.get_document_by_name(doc_id)
+
+                if not doc:
+                    incorrect_citations.append(f"{doc_id}:{clause_num}")
+                    details.append(f"❌ {doc_id}:{clause_num} - 문서가 RDB에 없음")
+                    continue
+
+                # 문서의 청크 조회
+                chunks = self.sql_store.get_chunks_by_document(doc['id'])
+
+                # 해당 조항 번호의 청크 찾기
+                found = False
+                for chunk in chunks:
+                    chunk_clause = chunk.get('clause', '')
+                    # 조항 번호 정규화 비교 (7.5 == 7.5.0)
+                    if chunk_clause == clause_num or chunk_clause.startswith(clause_num + '.'):
+                        found = True
+                        break
+
+                if found:
+                    verified_citations += 1
+                    details.append(f"✅ {doc_id}:{clause_num}")
+                else:
+                    incorrect_citations.append(f"{doc_id}:{clause_num}")
+                    details.append(f"❌ {doc_id}:{clause_num} - 조항이 문서에 없음")
+
+            except Exception as e:
+                incorrect_citations.append(f"{doc_id}:{clause_num}")
+                details.append(f"⚠️ {doc_id}:{clause_num} - RDB 조회 오류: {str(e)}")
+
+        accuracy_rate = (verified_citations / total_citations * 100) if total_citations > 0 else 0.0
+
+        return {
+            "has_citations": True,
+            "total_citations": total_citations,
+            "verified_citations": verified_citations,
+            "incorrect_citations": incorrect_citations,
+            "accuracy_rate": round(accuracy_rate, 1),
+            "verification_details": "\\n".join(details)
+        }
+
+    def evaluate_faithfulness(self, question: str, answer: str, context: str) -> Dict:
         """
         충실성 평가: 답변이 제공된 컨텍스트에만 기반하는지 평가
-        + 인용된 조항이 컨텍스트에 실제로 존재하는지 검증
-
-        Returns:
-            {"score": 1-5, "reasoning": "평가 이유"}
+        **RDB 검증 결과를 최우선으로 고려**
         """
-        prompt = f"""다음 답변이 제공된 컨텍스트에만 충실하게 기반하고 있는지 **매우 엄격하게** 평가하세요.
+        # RDB 검증 (필수)
+        rdb_verification = self._verify_against_rdb(answer)
 
-[질문]
-{question}
+        rdb_info = f"""
+[RDB 검증 결과 - 최우선 고려!]
+- 인용 존재: {'예' if rdb_verification['has_citations'] else '아니오'}
+- 검증된 인용: {rdb_verification['verified_citations']}/{rdb_verification['total_citations']}
+- 정확도: {rdb_verification['accuracy_rate']}%
+- 틀린 인용: {len(rdb_verification['incorrect_citations'])}개
 
-[제공된 컨텍스트]
-{context}
+검증 상세:
+{rdb_verification['verification_details']}
+"""
 
-[답변]
-{answer}
+        prompt = f"""답변이 컨텍스트에만 충실하게 기반하고 있는지 평가하세요.
 
-[평가 절차 - 반드시 순서대로 수행]
-1단계: 답변의 모든 내용이 컨텍스트에 있는지 확인
-2단계: [참고 문서] 섹션의 조항이 컨텍스트에 실제로 존재하는지 검증
-   - 답변 끝의 [참고 문서] 섹션을 찾으세요
-   - 형식: "EQ-SOP-00001(5.1.3, 5.4.2)"
-   - 각 문서명과 조항을 추출하고
-   - 컨텍스트에서 해당 문서의 해당 조항을 찾으세요
-   - 없다면 할루시네이션입니다
-3단계: 컨텍스트 외부의 일반론이나 추론이 있는지 확인
-4단계: 종합 평가
+**RDB 검증 결과를 최우선으로 고려하세요!**
+{rdb_info}
 
-[평가 기준 - 매우 엄격하게 적용]
-5점:
-  - 답변의 모든 단어가 컨텍스트에서 직접 추출 가능
-  - 인용된 모든 조항이 컨텍스트에 존재하고 정확히 일치
-  - 일반 상식이나 외부 지식 0%
+[질문] {question}
+[컨텍스트] {context[:2000]}...
+[답변] {answer[:1500]}...
 
-4점:
-  - 컨텍스트 기반이나 단어 순서 변경이나 매우 간단한 요약 포함
-  - 모든 조항이 컨텍스트에 존재
-  - 외부 지식 5% 이하
+[평가 기준 - RDB 검증 결과 중심]
+5점: RDB 정확도 100%, 모든 인용이 실제 문서에 존재, 컨텍스트만 사용
+4점: RDB 정확도 90% 이상, 1개 인용만 불일치
+3점: RDB 정확도 70-89%, 2-3개 인용 불일치
+2점: RDB 정확도 50-69%, 30% 이상 불일치
+1점: RDB 정확도 50% 미만 또는 인용 없음
 
-3점:
-  - 컨텍스트 내용 + 일반적인 연결어나 설명 추가
-  - 인용된 조항 중 1-2개가 컨텍스트에서 확인 불가
-  - 외부 지식 10% 이하
+JSON 형식으로 답변:
+{{"score": 1-5, "reasoning": "RDB 검증 결과 중심으로 평가 근거 설명"}}"""
 
-2점:
-  - 컨텍스트 외부의 추론, 해석, 일반론이 20% 이상
-  - 인용된 조항의 30% 이상이 컨텍스트에 없음
-  - 할루시네이션 의심
+        result = self._call_judge(prompt)
+        result["rdb_verification"] = rdb_verification
+        return result
 
-1점:
-  - 컨텍스트와 무관한 내용 30% 이상
-  - 인용된 조항의 50% 이상이 컨텍스트에 없음
-  - 명확한 할루시네이션 발견
-
-**중요**:
-- 조금이라도 컨텍스트에 없는 내용이 있으면 감점하세요
-- [참고 문서]에 나열된 조항이 컨텍스트에 없으면 즉시 대폭 감점하세요
-- **[참고 문서] 섹션 자체가 없으면 검증 불가이므로 낮은 점수를 줘야 합니다**
-
-**CRITICAL 체크**:
-- 답변 끝에 [참고 문서] 섹션이 있는가?
-- 없으면 3점 이상 줄 수 없음
-
-JSON 형식으로 답변하세요:
-{{"score": 1-5, "reasoning": "평가 근거를 한국어로 3-4문장으로 설명. [참고 문서] 섹션이 없으면 명시. 컨텍스트에 없는 조항이 있다면 구체적으로 지적"}}"""
-
-        return self._call_judge(prompt)
-
-    def evaluate_groundness(self, question: str, answer: str, context: str) -> Dict[str, any]:
+    def evaluate_groundness(self, question: str, answer: str, context: str) -> Dict:
         """
-        근거성 평가: 답변의 모든 주장이 명확한 근거를 가지는지 평가
-        + [참고 문서] 섹션이 있는지 검증
-
-        Returns:
-            {"score": 1-5, "reasoning": "평가 이유"}
+        근거성 평가: 답변의 모든 주장이 명확한 근거를 가지는지
+        **RDB 검증 필수**
         """
-        # 디버깅: [참고 문서] 섹션 존재 여부 확인
-        has_ref = "[참고 문서]" in answer
-        print(f"🔍 [평가 디버깅] 답변에 [참고 문서] 섹션: {'있음 ✅' if has_ref else '없음 ❌'}")
-        if has_ref:
-            # [참고 문서] 이후 내용 출력
-            ref_index = answer.find("[참고 문서]")
-            ref_content = answer[ref_index:ref_index+200]
-            print(f"   [참고 문서] 내용: {ref_content}")
+        rdb_verification = self._verify_against_rdb(answer)
 
-        prompt = f"""다음 답변의 근거성을 **매우 엄격하게** 평가하세요.
+        rdb_info = f"""
+[RDB 검증 결과 - 최우선!]
+- 인용 존재: {'예' if rdb_verification['has_citations'] else '아니오'}
+- 검증된 인용: {rdb_verification['verified_citations']}/{rdb_verification['total_citations']}
+- 정확도: {rdb_verification['accuracy_rate']}%
+"""
 
-**🚨 CRITICAL: 답변 전체를 끝까지 읽으세요!**
-- [DONE] 태그가 있어도 그 이후에 [참고 문서] 섹션이 있을 수 있습니다
-- 답변 텍스트 전체를 스캔하여 "[참고 문서]" 문자열이 있는지 반드시 확인하세요
+        prompt = f"""답변의 근거성을 평가하세요.
 
-[질문]
-{question}
+**RDB 검증 결과를 최우선으로 고려하세요!**
+{rdb_info}
 
-[제공된 컨텍스트]
-{context}
-
-[답변]
-{answer}
-
-[평가 절차 - 반드시 순서대로 수행]
-1단계: 답변 텍스트에서 "[참고 문서]" 문자열을 검색하세요
-   - 답변 어디든지 "[참고 문서]" 문자열이 있는지 찾으세요
-   - 찾았다면: 그 아래 줄에 "문서명(조항1, 조항2)" 형식이 있는지 확인
-   - 예시 형식:
-     ```
-     [참고 문서]
-     EQ-SOP-00001(5.1.3, 5.4.2)
-     ```
-   또는
-     ```
-     [참고 문서]
-     EQ-SOP-00001(5.1.3, 5.4.2)
-
-     [DONE]
-     ```
-
-2단계: [참고 문서] 섹션의 조항 검증:
-   - 컨텍스트에서 해당 문서의 해당 조항 내용을 찾으세요
-   - 답변 내용이 실제로 그 조항들의 내용과 일치하는지 확인하세요
-   - 조항 번호가 잘못되었다면 즉시 감점하세요
-
-3단계: 전체 답변의 근거성을 종합 평가하세요
-
-[평가 기준 - 매우 엄격하게 적용]
-**CRITICAL**: [참고 문서] 섹션이 없으면 절대 3점 이상 줄 수 없습니다!
-
-5점:
-  - 답변 끝에 [참고 문서] 섹션이 있음
-  - [참고 문서]에 나열된 모든 조항이 컨텍스트에 존재하고 내용이 일치함
-  - 조항 번호 오류 0개
-  - 답변 내용이 참고한 조항들의 내용과 일치함
-
-4점:
-  - [참고 문서] 섹션이 있음
-  - 조항 대부분 정확하나 1개 정도 불명확
-  - 조항 번호 오류 0-1개
-
-3점:
-  - [참고 문서] 섹션이 있으나 조항 번호가 실제 내용과 맞지 않는 경우 2-3개
-  - 또는 답변에 근거 없는 표현("일반적으로", "보통")이 포함됨
-
-2점:
-  - [참고 문서] 섹션이 있으나 조항 번호의 50% 이상이 실제 내용과 불일치
-  - 근거 없는 주장 다수
-
-1점:
-  - **[참고 문서] 섹션이 전혀 없음** ← 이 경우 무조건 1점
-  - [참고 문서]가 있어도 모든 조항이 틀림
-  - 대부분 추측이거나 일반론
-  - 컨텍스트와 연결 불가
-
-**핵심 검증 사항**:
-- 답변 끝에 "[참고 문서]" 섹션이 있는가?
-- 있다면: EQ-SOP-00001(5.1.3, 5.4.2) 같은 형식으로 문서와 조항이 나열되어 있는가?
-- 컨텍스트에서 해당 조항들을 찾아 답변 내용과 일치하는지 확인
-
-**CRITICAL 체크리스트 (반드시 확인)**:
-1. 답변 끝에 [참고 문서] 섹션이 있는가? (있으면 ○, 없으면 ✗)
-2. ✗라면 무조건 1점
-
-JSON 형식으로 답변하세요:
-{{"score": 1-5, "reasoning": "평가 근거를 한국어로 3-4문장으로 설명. [참고 문서] 섹션이 없으면 '인용 없음, 1점' 명시. 조항 번호 오류가 있다면 구체적으로 지적"}}"""
-
-        return self._call_judge(prompt)
-
-    def evaluate_relevancy(self, question: str, answer: str, context: str = None) -> Dict[str, any]:
-        """
-        관련성 평가: 답변이 질문에 직접적으로 답하는지 평가
-
-        Returns:
-            {"score": 1-5, "reasoning": "평가 이유"}
-        """
-        prompt = f"""다음 답변이 질문에 얼마나 직접적이고 관련성 있게 답하는지 평가하세요.
-
-[질문]
-{question}
-
-[답변]
-{answer}
+[질문] {question}
+[답변] {answer[:1500]}...
 
 [평가 기준]
-5점: 질문의 핵심을 정확히 파악하고 직접적으로 답변. 불필요한 정보 없음
-4점: 질문에 잘 답하나, 일부 부가 정보 포함
-3점: 질문과 관련있으나, 우회적이거나 일부 무관한 내용 포함
-2점: 질문과 부분적으로만 관련. 주요 질문 내용 누락
-1점: 질문과 거의 무관한 답변
+5점: 인용 있고 RDB 정확도 100%, 모든 주장에 명확한 근거
+4점: 인용 있고 RDB 정확도 90% 이상
+3점: 인용 있고 RDB 정확도 70-89%
+2점: 인용 있고 RDB 정확도 50-69%
+1점: 인용 없음 또는 RDB 정확도 50% 미만
 
-JSON 형식으로 답변하세요:
-{{"score": 1-5, "reasoning": "평가 근거를 한국어로 2-3문장으로 설명"}}"""
+JSON 형식으로 답변:
+{{"score": 1-5, "reasoning": "RDB 검증 결과 중심으로 평가"}}"""
+
+        result = self._call_judge(prompt)
+        result["rdb_verification"] = rdb_verification
+        return result
+
+    def evaluate_relevancy(self, question: str, answer: str, context: str = None) -> Dict:
+        """관련성 평가: 답변이 질문에 직접적으로 답하는지"""
+        prompt = f"""답변이 질문에 직접적으로 답하는지 평가하세요.
+
+[질문] {question}
+[답변] {answer[:1500]}...
+
+[평가 기준]
+5점: 질문의 핵심을 정확히 파악하고 직접 답변, 불필요한 정보 없음
+4점: 질문에 잘 답하나 일부 부가 정보 포함
+3점: 질문과 관련있으나 우회적이거나 일부 무관한 내용
+2점: 질문과 부분적으로만 관련, 주요 내용 누락
+1점: 질문과 거의 무관
+
+JSON 형식으로 답변:
+{{"score": 1-5, "reasoning": "평가 근거"}}"""
 
         return self._call_judge(prompt)
 
-    def evaluate_correctness(self, question: str, answer: str, context: str, reference_answer: str = None) -> Dict[str, any]:
+    def evaluate_correctness(
+        self,
+        question: str,
+        answer: str,
+        context: str,
+        reference_answer: str = None
+    ) -> Dict:
         """
-        정확성 평가: 답변이 정확하고 완전한지 평가
-        + 인용된 조항 내용이 실제로 정확한지 검증
-
-        Args:
-            reference_answer: 참조 답변 (있을 경우)
-
-        Returns:
-            {"score": 1-5, "reasoning": "평가 이유"}
+        정확성 평가: 답변이 정확하고 완전한지
+        **RDB 검증 필수**
         """
-        ref_section = f"\n[참조 답변]\n{reference_answer}\n" if reference_answer else ""
+        rdb_verification = self._verify_against_rdb(answer)
 
-        prompt = f"""다음 답변이 정확하고 완전한지 **매우 엄격하게** 평가하세요.
+        rdb_info = f"""
+[RDB 검증 결과 - 최우선!]
+- 인용 존재: {'예' if rdb_verification['has_citations'] else '아니오'}
+- 검증된 인용: {rdb_verification['verified_citations']}/{rdb_verification['total_citations']}
+- 정확도: {rdb_verification['accuracy_rate']}%
+- 틀린 인용: {', '.join(rdb_verification['incorrect_citations'][:5])}
+"""
 
-[질문]
-{question}
+        ref_section = f"\\n[참조 답변] {reference_answer}\\n" if reference_answer else ""
 
-[제공된 컨텍스트]
-{context}
+        prompt = f"""답변이 정확하고 완전한지 평가하세요.
+
+**RDB 검증 결과를 최우선으로 고려하세요!**
+{rdb_info}
+
+[질문] {question}
+[컨텍스트] {context[:2000]}...
 {ref_section}
-[답변]
-{answer}
+[답변] {answer[:1500]}...
 
-[평가 절차 - 반드시 순서대로 수행]
-1단계: 답변의 각 문장을 컨텍스트와 대조
-2단계: [참고 문서] 섹션의 조항 번호가 실제 내용과 일치하는지 검증
-   - 답변 끝의 [참고 문서] 섹션 확인: "EQ-SOP-00001(5.1.3, 5.4.2)"
-   - 검증: 컨텍스트에서 해당 조항들을 찾아 실제로 답변 내용과 일치하는지 확인
-   - 조항 번호가 틀렸다면 "심각한 오류"로 간주
-3단계: 필요한 정보가 누락되었는지 확인
-4단계: 종합 평가
+[평가 기준 - RDB 검증 중심]
+5점: RDB 정확도 100%, 모든 내용 정확, 필요한 정보 모두 포함
+4점: RDB 정확도 90% 이상, 대체로 정확하나 일부 세부사항 누락
+3점: RDB 정확도 70-89%, 핵심은 맞으나 중요 정보 누락
+2점: RDB 정확도 50-69%, 여러 오류 존재
+1점: RDB 정확도 50% 미만, 인용 없음, 심각한 오류 다수
 
-[평가 기준 - 매우 엄격하게 적용]
-5점:
-  - 모든 내용이 정확함
-  - 인용된 모든 조항 번호가 실제 내용과 정확히 일치
-  - 필요한 모든 정보 포함
-  - 오류 0개
+JSON 형식으로 답변:
+{{"score": 1-5, "reasoning": "RDB 검증 결과 중심으로 평가. 틀린 인용 있으면 구체적으로 지적"}}"""
 
-4점:
-  - 대체로 정확
-  - 조항 번호 1개 정도 불명확하거나 일부 세부사항 누락
-  - 경미한 부정확함 1-2개
-
-3점:
-  - 핵심은 맞으나 조항 번호 2-3개가 실제 내용과 불일치
-  - 또는 중요한 정보 누락
-  - 일부 부정확함
-
-2점:
-  - 인용된 조항의 50% 이상이 실제 내용과 불일치 (심각한 할루시네이션)
-  - 또는 여러 오류
-  - 주요 정보 누락
-
-1점:
-  - 대부분의 조항 번호가 틀림
-  - 심각한 오류 다수
-  - 대부분의 정보 누락 또는 잘못됨
-
-**중요**:
-- 조항 번호가 틀린 것은 단순 실수가 아닌 심각한 할루시네이션입니다
-- [참고 문서] 섹션이 없는 것은 근거 없는 답변이므로 심각한 문제입니다
-
-**CRITICAL 논리 오류 방지**:
-- "[참고 문서] 섹션이 없으므로 오류가 없다" ← 이것은 잘못된 논리입니다!
-- [참고 문서] 섹션이 없으면 오히려 큰 문제이며 낮은 점수를 줘야 합니다
-
-JSON 형식으로 답변하세요:
-{{"score": 1-5, "reasoning": "평가 근거를 한국어로 3-4문장으로 설명. [참고 문서] 섹션이 없으면 '근거 없음'을 명시하고 감점. 조항 번호 오류가 있다면 구체적으로 지적하고 몇 개나 틀렸는지 명시"}}"""
-
-        return self._call_judge(prompt)
+        result = self._call_judge(prompt)
+        result["rdb_verification"] = rdb_verification
+        return result
 
     def evaluate_single(
         self,
@@ -317,111 +336,56 @@ JSON 형식으로 답변하세요:
         context: str = "",
         metrics: List[str] = None,
         reference_answer: str = None
-    ) -> Dict[str, Dict[str, any]]:
+    ) -> Dict[str, Dict]:
         """
         단일 질문-답변 쌍에 대한 종합 평가
 
         Args:
             question: 사용자 질문
             answer: 에이전트 답변
-            context: 검색된 컨텍스트 (있을 경우)
+            context: 검색된 컨텍스트
             metrics: 평가할 메트릭 리스트 (기본: 전체)
-            reference_answer: 참조 답변 (있을 경우)
+            reference_answer: 참조 답변 (옵션)
 
         Returns:
-            {"faithfulness": {...}, "groundness": {...}, ...}
+            {"faithfulness": {...}, "groundness": {...}, "relevancy": {...}, "correctness": {...}}
         """
         if metrics is None:
             metrics = ["faithfulness", "groundness", "relevancy", "correctness"]
 
         results = {}
 
+        print("\\n" + "="*80)
+        print("🔍 LLM as a Judge 평가 시작 (RDB 검증 포함)")
+        print("="*80)
+
         if "faithfulness" in metrics and context:
+            print("\\n[1/4] Faithfulness 평가 중...")
             results["faithfulness"] = self.evaluate_faithfulness(question, answer, context)
+            print(f"   점수: {results['faithfulness'].get('score', 0)}/5")
 
         if "groundness" in metrics and context:
+            print("\\n[2/4] Groundness 평가 중...")
             results["groundness"] = self.evaluate_groundness(question, answer, context)
+            print(f"   점수: {results['groundness'].get('score', 0)}/5")
 
         if "relevancy" in metrics:
+            print("\\n[3/4] Relevancy 평가 중...")
             results["relevancy"] = self.evaluate_relevancy(question, answer, context)
+            print(f"   점수: {results['relevancy'].get('score', 0)}/5")
 
         if "correctness" in metrics and context:
-            results["correctness"] = self.evaluate_correctness(
-                question, answer, context, reference_answer
-            )
+            print("\\n[4/4] Correctness 평가 중...")
+            results["correctness"] = self.evaluate_correctness(question, answer, context, reference_answer)
+            print(f"   점수: {results['correctness'].get('score', 0)}/5")
 
+        # 평균 점수 계산
+        scores = [r.get("score", 0) for r in results.values() if "score" in r]
+        avg_score = sum(scores) / len(scores) if scores else 0
+
+        print("\\n" + "="*80)
+        print(f"📊 평가 완료 - 평균 점수: {avg_score:.1f}/5")
+        print("="*80)
+
+        results["average_score"] = round(avg_score, 1)
         return results
-
-    def evaluate_batch(
-        self,
-        qa_pairs: List[Dict[str, str]],
-        metrics: List[str] = None
-    ) -> List[Dict[str, any]]:
-        """
-        여러 질문-답변 쌍에 대한 배치 평가
-
-        Args:
-            qa_pairs: [{"question": "...", "answer": "...", "context": "..."}, ...]
-            metrics: 평가할 메트릭 리스트
-
-        Returns:
-            [{"question": "...", "scores": {...}}, ...]
-        """
-        results = []
-
-        for i, qa in enumerate(qa_pairs):
-            print(f"🟢 평가 진행 중: {i+1}/{len(qa_pairs)}")
-
-            scores = self.evaluate_single(
-                question=qa.get("question", ""),
-                answer=qa.get("answer", ""),
-                context=qa.get("context", ""),
-                metrics=metrics,
-                reference_answer=qa.get("reference_answer")
-            )
-
-            results.append({
-                "question": qa.get("question"),
-                "answer": qa.get("answer"),
-                "scores": scores
-            })
-
-        return results
-
-    def get_average_scores(self, batch_results: List[Dict[str, any]]) -> Dict[str, float]:
-        """
-        배치 평가 결과의 평균 점수 계산
-
-        Returns:
-            {"faithfulness": 평균점수, "groundness": 평균점수, ...}
-        """
-        metric_sums = {}
-        metric_counts = {}
-
-        for result in batch_results:
-            scores = result.get("scores", {})
-            for metric, score_data in scores.items():
-                score = score_data.get("score", 0)
-                metric_sums[metric] = metric_sums.get(metric, 0) + score
-                metric_counts[metric] = metric_counts.get(metric, 0) + 1
-
-        averages = {}
-        for metric in metric_sums:
-            averages[metric] = metric_sums[metric] / metric_counts[metric] if metric_counts[metric] > 0 else 0
-
-        return averages
-
-
-# 사용 예시
-if __name__ == "__main__":
-    evaluator = AgentEvaluator(judge_model="gpt-4o-mini")
-
-    # 단일 평가 예시
-    result = evaluator.evaluate_single(
-        question="작업지침서가 뭐야?",
-        answer="작업지침서는 현장에서 수행되는 업무를 일관되게 운영하기 위한 지침 문서입니다.",
-        context="[검색] EQ-SOP-00001 > 5.1.3: 작업지침서(WI)는 부서 또는 공정 단위의 운영 흐름과 관리 방법을 규정하는 문서입니다.",
-        metrics=["faithfulness", "relevancy"]
-    )
-
-    print(json.dumps(result, ensure_ascii=False, indent=2))
