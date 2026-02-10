@@ -565,10 +565,18 @@ def process_document(
             with open(file_path, 'rb') as f:
                 content = f.read()
 
-        # 문서 ID 결정
+        # 문서 ID 및 버전 결정
         if doc_id is None:
-            match = re.search(r'[A-Z]+-[A-Z]+-\d+', file_path)
-            doc_id = match.group() if match else Path(file_path).stem
+            # ID 추출: EQ-SOP-00004 형식 (대문자-대문자-숫자)
+            id_match = re.search(r'[A-Z]+-[A-Z]+-\d+', file_path)
+            doc_id = id_match.group() if id_match else Path(file_path).stem
+            
+        # 1차 버전 추출: 파일명 패턴 (v1.0, _v2.0 등)
+        version = None
+        version_match = re.search(r'[vV_-]?(\d+\.\d+)', Path(file_path).name)
+        if version_match:
+            version = version_match.group(1)
+            print(f"     [추출] 파일명에서 버전 감지: {version}")
 
         doc_title = Path(file_path).stem
 
@@ -586,6 +594,34 @@ def process_document(
                 "chunks": [],
                 "errors": ["조항을 찾을 수 없습니다."]
             }
+            
+        # 2.5 지능형 버전 추출 (파일명에 없을 경우 본문 분석)
+        if not version and use_llm_metadata:
+            print("     [추출] 파일명에 버전 정보가 없어 본문 분석을 시작합니다...")
+            try:
+                from backend.agent import get_zai_client
+                client = get_zai_client()
+                # 앞뒤 2000자 분석
+                sample_text = markdown[:2000] + "\n...\n" + markdown[-2000:]
+                prompt = f"""다음 GMP 문서 내용(개정 이력 포함)을 보고 이 문서의 '현재 버전'을 찾아내세요.
+                - 형식은 1.0, 2.0 등 숫자.숫자 여야 합니다.
+                - 가장 최근(마지막) 개정이력을 기준으로 하세요.
+                - 버전 번호만 답변하세요 (예: 2.0). 찾지 못하면 '1.0'이라고 답하세요.
+                
+                [문서 내용]
+                {sample_text}
+                """
+                res = client.chat.completions.create(
+                    model="glm-4.7-flash",
+                    messages=[{"role": "user", "content": prompt}]
+                )
+                extracted_v = res.choices[0].message.content.strip()
+                v_match_llm = re.search(r'(\d+\.\d+)', extracted_v)
+                if v_match_llm:
+                    version = v_match_llm.group(1)
+                    print(f"     [추출] 본문 분석을 통해 버전 감지: {version}")
+            except Exception as ve:
+                print(f"     [추출] 본문 버전 추출 실패: {ve}")
 
         # 3. 청크 생성
         print(f"\n[3/4] 청크 생성 {'(LLM 메타데이터 포함)' if use_llm_metadata else ''}")
@@ -601,6 +637,7 @@ def process_document(
             "chunks": chunks,
             "doc_id": doc_id,
             "doc_title": doc_title,
+            "version": version or "1.0",
             "total_clauses": len(clauses),
             "errors": []
         }

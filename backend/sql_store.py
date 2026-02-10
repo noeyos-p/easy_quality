@@ -91,11 +91,11 @@ class SQLStore:
         CREATE INDEX IF NOT EXISTS idx_memory_users_id ON memory(users_id);
         CREATE INDEX IF NOT EXISTS idx_document_doc_name_id ON document(doc_name_id);
 
-        -- [하위 호환성] doc_name 컬럼이 존재할 경우 NOT NULL 제약조건 제거
+        -- [Migration] doc_name 컬럼이 존재할 경우 삭제 (v2 전환 완료 후)
         DO $$ 
         BEGIN 
             IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='document' AND column_name='doc_name') THEN
-                ALTER TABLE document ALTER COLUMN doc_name DROP NOT NULL;
+                ALTER TABLE document DROP COLUMN doc_name;
             END IF;
         END $$;
         """
@@ -272,7 +272,8 @@ class SQLStore:
             query = base_query + " AND d.version = %s"
             params = (doc_name, version)
         else:
-            query = base_query + " ORDER BY d.created_at DESC LIMIT 1"
+            # 버전이 여러 개일 경우 버전을 내림차순 정렬하여 가장 높은 버전을 선택 (문자열 정렬이므로 10.0이 2.0보다 작을 수 있음에 주의, 여기서는 우선 기본 DESC 사용)
+            query = base_query + " ORDER BY d.version DESC, d.created_at DESC LIMIT 1"
             params = (doc_name,)
 
         try:
@@ -281,6 +282,7 @@ class SQLStore:
                     cur.execute(query, params)
                     return cur.fetchone()
         except Exception as e:
+            print(f"🔴 [SQLStore] 문서 조회 실패: {e}")
             return None
 
     def get_chunks_by_document(self, document_id: int) -> List[Dict]:
@@ -294,6 +296,73 @@ class SQLStore:
         except Exception:
             return []
 
+    def get_document_versions(self, doc_name: str) -> List[Dict]:
+        """특정 문서의 모든 버전 목록 조회"""
+        query = """
+            SELECT d.id, dn.name as doc_name, d.version, d.status, d.created_at, d.effective_at
+            FROM document d
+            JOIN doc_name dn ON d.doc_name_id = dn.id
+            WHERE dn.name = %s
+            ORDER BY d.version DESC, d.created_at DESC
+        """
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    cur.execute(query, (doc_name,))
+                    return cur.fetchall()
+        except Exception:
+            return []
+
+    def get_clause_diff(self, doc_name: str, v1: str, v2: str) -> List[Dict]:
+        """두 버전 간의 조항 단위 비교 (Added, Deleted, Modified)"""
+        print(f"[SQLStore] 조항 비교 시작: {doc_name} v{v1} vs {v2}")
+        
+        # v1 문서 ID 조회
+        doc1 = self.get_document_by_name(doc_name, v1)
+        if not doc1: return [{"error": f"v{v1} 버전을 찾을 수 없습니다."}]
+        
+        # v2 문서 ID 조회
+        doc2 = self.get_document_by_name(doc_name, v2)
+        if not doc2: return [{"error": f"v{v2} 버전을 찾을 수 없습니다."}]
+
+        query = """
+            SELECT 
+                COALESCE(c2.clause, c1.clause) as clause,
+                CASE 
+                    WHEN c1.id IS NULL THEN 'ADDED'
+                    WHEN c2.id IS NULL THEN 'DELETED'
+                    WHEN REGEXP_REPLACE(c1.content, '\s+', '', 'g') <> REGEXP_REPLACE(c2.content, '\s+', '', 'g') THEN 'MODIFIED'
+                    ELSE 'UNCHANGED' 
+                END as change_type,
+                c1.content as v1_content,
+                c2.content as v2_content,
+                c1.metadata as v1_meta,
+                c2.metadata as v2_meta
+            FROM chunk c1
+            FULL OUTER JOIN chunk c2 
+                ON c1.clause = c2.clause 
+                AND c2.document_id = %s
+            WHERE c1.document_id = %s OR c2.document_id = %s
+            ORDER BY COALESCE(c2.id, c1.id)
+        """
+        
+        diffs = []
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    # c2.document_id, c1.document_id, c2.document_id 순서
+                    cur.execute(query, (doc2['id'], doc1['id'], doc2['id']))
+                    rows = cur.fetchall()
+                    
+                    for row in rows:
+                        if row['change_type'] != 'UNCHANGED':
+                            diffs.append(dict(row))
+                            
+            return diffs
+        except Exception as e:
+            print(f"🔴 [SQLStore] 조항 비교 실패: {e}")
+            return [{"error": str(e)}]
+
     def list_documents(self) -> List[Dict]:
         """모든 문서 목록 조회"""
         query = """
@@ -301,7 +370,7 @@ class SQLStore:
                    d.modified_at, d.approved_at, d.effective_at, d.deprecated_at, d.status
             FROM document d
             JOIN doc_name dn ON d.doc_name_id = dn.id
-            ORDER BY d.created_at DESC
+            ORDER BY dn.name ASC, d.version DESC, d.created_at DESC
         """
         try:
             with self._get_connection() as conn:
@@ -450,6 +519,8 @@ class SQLStore:
 
             # 6. 인덱스 생성
             "CREATE INDEX IF NOT EXISTS idx_document_doc_name_id ON document(doc_name_id);",
+            # 7. 레거시 doc_name 컬럼 삭제
+            "ALTER TABLE document DROP COLUMN IF EXISTS doc_name CASCADE;",
         ]
 
         try:
@@ -467,7 +538,7 @@ class SQLStore:
                                 print(f"    단계 {i} 경고: {e}")
                     conn.commit()
 
-            print(" [SQLStore] 마이그레이션 v2 완료!")
+            print(" [SQLStore] 마이그레이션 v2 및 컬럼 정제 완료!")
             return True
 
         except Exception as e:

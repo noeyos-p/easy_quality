@@ -377,6 +377,39 @@ class Neo4jGraphStore:
                 }
             return None
 
+    def get_impact_analysis(self, target_doc_id: str) -> List[Dict]:
+        """특정 문서가 변경되었을 때, 이를 참조하고 있는 다른 문서(파급 효과) 조회
+        
+        Returns:
+            List[Dict]: [
+                {
+                    "source_doc_id": "EQ-WI-0001", 
+                    "source_doc_title": "작업지침...", 
+                    "citing_section": "EQ-WI-0001:3.2", 
+                    "citing_content": "본 작업은 EQ-SOP-0001에 따른다..."
+                }, ...
+            ]
+        """
+        with self.driver.session(database=self.database) as session:
+            result = session.run("""
+                MATCH (citing_section:Section)-[:MENTIONS]->(target:Document {doc_id: $doc_id})
+                MATCH (citing_doc:Document)-[:HAS_SECTION]->(citing_section)
+                RETURN citing_doc.doc_id as doc_id, 
+                       citing_doc.title as title, 
+                       citing_section.section_id as section_id, 
+                       citing_section.content as content
+            """, doc_id=target_doc_id)
+            
+            impact_list = []
+            for record in result:
+                impact_list.append({
+                    "source_doc_id": record["doc_id"],
+                    "source_doc_title": record["title"],
+                    "citing_section": record["section_id"].split(":")[-1] if ":" in record["section_id"] else record["section_id"],
+                    "citing_content": record["content"][:200] + "..." # 너무 길면 자름
+                })
+            return impact_list
+
     # ═══════════════════════════════════════════════════════════════════════════
     # 통계
     # ═══════════════════════════════════════════════════════════════════════════
