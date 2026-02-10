@@ -335,48 +335,59 @@ class SQLStore:
     def get_clause_diff(self, doc_name: str, v1: str, v2: str) -> List[Dict]:
         """두 버전 간의 조항 단위 비교 (Added, Deleted, Modified)"""
         print(f"[SQLStore] 조항 비교 시작: {doc_name} v{v1} vs {v2}")
-        
+
         # v1 문서 ID 조회
         doc1 = self.get_document_by_name(doc_name, v1)
         if not doc1: return [{"error": f"v{v1} 버전을 찾을 수 없습니다."}]
-        
+
         # v2 문서 ID 조회
         doc2 = self.get_document_by_name(doc_name, v2)
         if not doc2: return [{"error": f"v{v2} 버전을 찾을 수 없습니다."}]
 
+        # 조항별로 content를 병합한 후 비교
         query = """
-            SELECT 
-                COALESCE(c2.clause, c1.clause) as clause,
-                CASE 
-                    WHEN c1.id IS NULL THEN 'ADDED'
-                    WHEN c2.id IS NULL THEN 'DELETED'
-                    WHEN REGEXP_REPLACE(c1.content, '\s+', '', 'g') <> REGEXP_REPLACE(c2.content, '\s+', '', 'g') THEN 'MODIFIED'
-                    ELSE 'UNCHANGED' 
+            WITH v1_clauses AS (
+                SELECT
+                    clause,
+                    STRING_AGG(content, ' ' ORDER BY id) as content
+                FROM chunk
+                WHERE document_id = %s AND clause IS NOT NULL
+                GROUP BY clause
+            ),
+            v2_clauses AS (
+                SELECT
+                    clause,
+                    STRING_AGG(content, ' ' ORDER BY id) as content
+                FROM chunk
+                WHERE document_id = %s AND clause IS NOT NULL
+                GROUP BY clause
+            )
+            SELECT
+                COALESCE(v2.clause, v1.clause) as clause,
+                CASE
+                    WHEN v1.clause IS NULL THEN 'ADDED'
+                    WHEN v2.clause IS NULL THEN 'DELETED'
+                    WHEN REGEXP_REPLACE(v1.content, '\s+', '', 'g') <> REGEXP_REPLACE(v2.content, '\s+', '', 'g') THEN 'MODIFIED'
+                    ELSE 'UNCHANGED'
                 END as change_type,
-                c1.content as v1_content,
-                c2.content as v2_content,
-                c1.metadata as v1_meta,
-                c2.metadata as v2_meta
-            FROM chunk c1
-            FULL OUTER JOIN chunk c2 
-                ON c1.clause = c2.clause 
-                AND c2.document_id = %s
-            WHERE c1.document_id = %s OR c2.document_id = %s
-            ORDER BY COALESCE(c2.id, c1.id)
+                v1.content as v1_content,
+                v2.content as v2_content
+            FROM v1_clauses v1
+            FULL OUTER JOIN v2_clauses v2 ON v1.clause = v2.clause
+            ORDER BY COALESCE(v2.clause, v1.clause)
         """
-        
+
         diffs = []
         try:
             with self._get_connection() as conn:
                 with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                    # c2.document_id, c1.document_id, c2.document_id 순서
-                    cur.execute(query, (doc2['id'], doc1['id'], doc2['id']))
+                    cur.execute(query, (doc1['id'], doc2['id']))
                     rows = cur.fetchall()
-                    
+
                     for row in rows:
                         if row['change_type'] != 'UNCHANGED':
                             diffs.append(dict(row))
-                            
+
             return diffs
         except Exception as e:
             print(f"🔴 [SQLStore] 조항 비교 실패: {e}")
