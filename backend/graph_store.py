@@ -377,6 +377,76 @@ class Neo4jGraphStore:
                 }
             return None
 
+    def get_document_relations(self, doc_id: str) -> Dict:
+        """문서 관계 조회 (REFERENCES + MENTIONS 통합)
+
+        Returns:
+            {
+                "doc_id": str,
+                "title": str,
+                "references_to": [{"doc_id": str, "title": str}],  # 이 문서가 참조하는 상위 문서들
+                "referenced_by": [{"doc_id": str, "title": str}]   # 이 문서를 참조하는 하위 문서들
+            }
+        """
+        with self.driver.session(database=self.database) as session:
+            result = session.run("""
+                MATCH (d:Document {doc_id: $doc_id})
+
+                // REFERENCES: 이 문서가 참조하는 문서들 (상위 문서)
+                OPTIONAL MATCH (d)-[:REFERENCES]->(ref_doc:Document)
+
+                // MENTIONS: 이 문서의 섹션이 언급하는 문서들
+                OPTIONAL MATCH (d)-[:HAS_SECTION]->(s:Section)-[:MENTIONS]->(mention_doc:Document)
+
+                // REFERENCES: 이 문서를 참조하는 문서들 (하위 문서)
+                OPTIONAL MATCH (citing_doc:Document)-[:REFERENCES]->(d)
+
+                // MENTIONS: 다른 문서의 섹션이 이 문서를 언급
+                OPTIONAL MATCH (citing_section:Section)-[:MENTIONS]->(d)
+                OPTIONAL MATCH (citing_via_mention:Document)-[:HAS_SECTION]->(citing_section)
+
+                RETURN d.doc_id as doc_id,
+                       d.title as title,
+                       collect(DISTINCT {doc_id: ref_doc.doc_id, title: ref_doc.title}) +
+                       collect(DISTINCT {doc_id: mention_doc.doc_id, title: mention_doc.title}) as references_to,
+                       collect(DISTINCT {doc_id: citing_doc.doc_id, title: citing_doc.title}) +
+                       collect(DISTINCT {doc_id: citing_via_mention.doc_id, title: citing_via_mention.title}) as referenced_by
+            """, doc_id=doc_id)
+            record = result.single()
+            if record:
+                # null 값 제거 및 중복 제거
+                references_to = [
+                    r for r in record["references_to"]
+                    if r.get("doc_id") and r.get("doc_id") != doc_id
+                ]
+                referenced_by = [
+                    r for r in record["referenced_by"]
+                    if r.get("doc_id") and r.get("doc_id") != doc_id
+                ]
+
+                # 중복 제거 (doc_id 기준)
+                seen_refs = set()
+                unique_refs = []
+                for r in references_to:
+                    if r["doc_id"] not in seen_refs:
+                        seen_refs.add(r["doc_id"])
+                        unique_refs.append(r)
+
+                seen_cited = set()
+                unique_cited = []
+                for r in referenced_by:
+                    if r["doc_id"] not in seen_cited:
+                        seen_cited.add(r["doc_id"])
+                        unique_cited.append(r)
+
+                return {
+                    "doc_id": record["doc_id"],
+                    "title": record["title"],
+                    "references_to": unique_refs,
+                    "referenced_by": unique_cited
+                }
+            return None
+
     def get_impact_analysis(self, target_doc_id: str) -> List[Dict]:
         """특정 문서가 변경되었을 때, 이를 참조하고 있는 다른 문서(파급 효과) 조회
         

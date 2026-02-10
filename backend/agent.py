@@ -244,7 +244,7 @@ def get_references_tool(doc_id: str) -> str:
     if not _graph_store:
         return ""
 
-    refs = _graph_store.get_document_references(doc_id)
+    refs = _graph_store.get_document_relations(doc_id)
 
     if not refs:
         return ""
@@ -352,7 +352,7 @@ def orchestrator_node(state: AgentState):
     
     [라우팅 규칙]
     - 사용자가 "**버전**", "**이력**", "**History**", "**변경**", "**수정**", "**차이**", "**비교**" 등의 단어를 사용하여 특정 문서에 대해 질문하면 **무조건 `comparison`**을 호출하세요. (예: "SOP-001 버전 알려줘", "SOP-001 바뀐거 뭐야?", "1.0과 2.0 차이가 뭐야?")
-    - 사용자가 "참조 목록", "Reference", "연결된 문서" 등을 물어보면 **무조건 `graph`**를 호출하세요. `retrieval`로 본문에서 찾으려 하지 마세요.
+    - 사용자가 "**참조 목록**", "**Reference**", "**연결된 문서**", "**상위문서**", "**하위문서**", "**근거 문서**", "**영향 분석**" 등을 물어보면 **무조건 `graph`**를 호출하세요. `retrieval`로 본문에서 찾으려 하지 마세요.
     - 이전 대화에서 이미 특정 문서(SOP ID)가 식별되었다면, 그 ID를 바탕으로 전문 에이전트(graph, comparison)를 즉시 호출하세요.
     - 만약 서브 에이전트가 "문서 ID를 찾지 못했다"고 보고한다면, `retrieval`을 통해 먼저 문서 ID를 찾은 후 다시 해당 에이전트를 부르세요.
     

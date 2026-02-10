@@ -467,7 +467,8 @@ def call_model_node(state: SearchState):
         model=state["model"],
         messages=full_messages,
         tools=tools,
-        tool_choice="auto"
+        tool_choice="auto",
+        temperature=0.0  # 완전 결정론적 - [USE: ...] 태그 누락 방지
     )
     
     return {"messages": [res.choices[0].message]}
