@@ -6,10 +6,21 @@
 
 
 import json
-from backend.agent import get_zai_client, AgentState
+from typing import Optional
+from backend.agent import get_zai_client, AgentState, safe_json_loads
 # 순환 참조 방지를 위해 직접 Store 사용
 from backend.sql_store import SQLStore
 from backend.graph_store import Neo4jGraphStore
+
+def normalize_version(v: Optional[str]) -> Optional[str]:
+    """버전 번호 정량화: '1' -> '1.0', 'v1.1' -> '1.1'"""
+    if not v: return v
+    v_str = str(v).strip().lower()
+    if v_str.startswith('v'): v_str = v_str[1:]
+    # 도트가 없고 숫자만 있는 경우 .0 부착
+    if '.' not in v_str and v_str.replace('.', '').isdigit():
+        return f"{v_str}.0"
+    return v_str
 
 def comparison_agent_node(state: AgentState):
     """[서브] 비교 에이전트 - 버전 목록 조회 또는 내용 비교 분석"""
@@ -37,11 +48,11 @@ def comparison_agent_node(state: AgentState):
             messages=[{"role": "user", "content": intent_prompt}],
             response_format={"type": "json_object"}
         )
-        info = json.loads(res.choices[0].message.content)
+        info = safe_json_loads(res.choices[0].message.content)
         intent = info.get("intent")
         doc_id = info.get("doc_id")
-        v1 = info.get("v1")
-        v2 = info.get("v2")
+        v1 = normalize_version(info.get("v1"))
+        v2 = normalize_version(info.get("v2"))
         
         print(f"👉 비교 의도: {intent}, 문서: {doc_id}, 버전: {v1} vs {v2}")
 
