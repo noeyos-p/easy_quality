@@ -62,7 +62,6 @@ def comparison_agent_node(state: AgentState):
             # 버전 정보가 없으면 자동 추론 (최신 2개)
             if not v1 or not v2:
                 print(f"[DEBUG] 버전 자동 선택 시작")
-                from backend.sql_store import SQLStore
                 store = SQLStore()
                 versions = store.get_document_versions(doc_id)
                 print(f"[DEBUG] 조회된 버전 개수: {len(versions) if versions else 0}")
@@ -86,7 +85,6 @@ def comparison_agent_node(state: AgentState):
             # 실제 비교 데이터 조회 (SQL Diff) 및 검증
             print(f"[DEBUG] SQL Diff 조회 시작: {doc_id}, v1={v1}, v2={v2}")
             try:
-                from backend.sql_store import SQLStore
                 store = SQLStore()
                 diffs = store.get_clause_diff(doc_id, v1, v2)
                 
@@ -179,11 +177,11 @@ def comparison_agent_node(state: AgentState):
                 final_report = res.choices[0].message.content
                 return {"context": [final_report + " [DONE]"]}
             except Exception as e:
-                return {"context": [f"### [비교 보고서 생성 실패]\nLLM 호출 중 오류가 발생했습니다: {e}"]}
+                return {"context": [f"### [비교 보고서 생성 실패]\nLLM 호출 중 오류가 발생했습니다: {e} [DONE]"]}
 
         else:
-             return {"context": [f"### [이해 불가]\n죄송합니다, 의도를 파악하지 못했습니다. (Intent: {intent})"]}
+             return {"context": [f"### [이해 불가]\n죄송합니다, 의도를 파악하지 못했습니다. (Intent: {intent}) [DONE]"]}
     
     except Exception as e:
         print(f"Compare Agent Error: {e}")
-        return {"context": [f"### [에이전트 처리 오류]\n{str(e)}"]}
+        return {"context": [f"### [에이전트 처리 오류]\n{str(e)} [DONE]"]}
