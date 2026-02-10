@@ -524,8 +524,11 @@ def chat(request: ChatRequest):
             elif is_error_message:
                 print("평가 생략: 에러 메시지")
             else:
-                # 평가 실행
-                evaluator = AgentEvaluator(judge_model="gpt-4o-mini")
+                # 평가 실행 (RDB 검증 필수!)
+                evaluator = AgentEvaluator(
+                    judge_model="gpt-4o-mini",
+                    sql_store=sql_store  # ✅ RDB 검증을 위해 필수 전달
+                )
 
                 # context 추출 (agent_log에서)
                 context = response.get("agent_log", {}).get("context", "")
@@ -542,14 +545,23 @@ def chat(request: ChatRequest):
                 # 로그 출력
                 if evaluation_scores:
                     print(f"\n{'='*60}")
-                    print(f"평가 결과")
+                    print(f"평가 결과 (평균: {evaluation_scores.get('average_score', 0)}/5)")
                     print(f"{'='*60}")
                     for metric, result in evaluation_scores.items():
+                        # average_score는 건너뜀 (float이므로 .get() 메서드 없음)
+                        if metric == "average_score":
+                            continue
+
                         score = result.get("score", 0)
                         reasoning = result.get("reasoning", "")
                         print(f"\n[{metric.upper()}]")
                         print(f"  점수: {score}/5")
                         print(f"  이유: {reasoning}")
+
+                        # RDB 검증 결과 출력
+                        if "rdb_verification" in result:
+                            rdb = result["rdb_verification"]
+                            print(f"  📊 RDB 검증: 정확도 {rdb.get('accuracy_rate', 0)}% ({rdb.get('verified_citations', 0)}/{rdb.get('total_citations', 0)})")
                     print(f"{'='*60}\n")
 
         except ImportError:
@@ -1028,6 +1040,61 @@ def test_echo(request: SimpleRequest):
         "answer": f"테스트 응답: {request.message}",
         "success": True
     }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# API 엔드포인트 - LLM as a Judge 평가
+# ═══════════════════════════════════════════════════════════════════════════
+
+class EvaluationRequest(BaseModel):
+    """평가 요청 모델"""
+    question: str
+    answer: str
+    context: Optional[str] = ""
+    metrics: Optional[List[str]] = None  # ["faithfulness", "groundness", "relevancy", "correctness"]
+    reference_answer: Optional[str] = None
+
+@app.post("/evaluate")
+def evaluate_answer(request: EvaluationRequest):
+    """
+    🔍 LLM as a Judge - 답변 평가 (RDB 검증 포함)
+
+    평가 메트릭:
+    - faithfulness: 컨텍스트 충실성 (환각 방지)
+    - groundness: 근거 명확성
+    - relevancy: 질문 관련성
+    - correctness: 정확성과 완전성
+
+    **무조건 RDB에서 실제 문서를 조회하여 인용 정확성 검증**
+    """
+    try:
+        from backend.evaluation import AgentEvaluator
+
+        # RDB 검증을 위해 sql_store 필수 전달
+        evaluator = AgentEvaluator(
+            judge_model="gpt-4o-mini",
+            sql_store=sql_store
+        )
+
+        # 평가 실행
+        results = evaluator.evaluate_single(
+            question=request.question,
+            answer=request.answer,
+            context=request.context,
+            metrics=request.metrics,
+            reference_answer=request.reference_answer
+        )
+
+        return {
+            "success": True,
+            "evaluation": results,
+            "average_score": results.get("average_score", 0)
+        }
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(500, f"평가 실행 실패: {str(e)}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
