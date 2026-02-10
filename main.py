@@ -284,6 +284,7 @@ async def upload_document(
     overlap: int = Form(DEFAULT_OVERLAP),
     use_langgraph: bool = Form(True),  #  LangGraph 사용 여부
     use_llm_metadata: bool = Form(True),  #  LLM 메타데이터 추출 사용 여부
+    version: Optional[str] = Form(None), # 사용자가 직접 지정하는 버전
 ):
     """
     문서 업로드 (LangGraph v9.2 파이프라인)
@@ -380,11 +381,17 @@ async def upload_document(
         try:
             full_markdown = "\n\n".join([c.text for c in chunks])
 
+            # 파이프라인에서 추출된 버전 또는 사용자 입력 버전 결정
+            final_version = version or result.get("version", "1.0")
+            
+            if final_version != "1.0":
+                print(f"     [추출] 최종 결정된 버전: {final_version}")
+
             doc_id_db = sql_store.save_document(
                 doc_name=doc_id,
                 content=full_markdown,
                 doc_type=filename.split('.')[-1] if '.' in filename else None,
-                version="1.0"
+                version=final_version
             )
 
             if doc_id_db and chunks:
@@ -441,6 +448,7 @@ async def upload_document(
             "filename": filename,
             "doc_id": doc_id,
             "doc_title": doc_title,
+            "version": final_version,
             "chunks": len(chunks),
             "total_clauses": result.get("total_clauses"),
             "chunk_method": chunk_method,
