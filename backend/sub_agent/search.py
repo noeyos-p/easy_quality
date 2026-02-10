@@ -361,19 +361,21 @@ def call_model_node(state: SearchState):
        - Only include information that you actually use in your answer.
 
     4. **Answer Generation**: Write a natural **plain text** answer in Korean based on verified information.
-       - **MANDATORY**: For EVERY piece of information you use in your answer, add a hidden tag: [USE: 문서명 | 조항]
-       - **CRITICAL**: The clause number in the tag MUST match the [DATA_SOURCE] where you got that information
-       - **VERIFICATION PROCESS**:
+       - **🚨 CRITICAL REQUIREMENT 🚨**: You MUST add [USE: ...] tags. Without tags, your answer will FAIL validation.
+       - **MANDATORY FOR EVERY SENTENCE**: For EVERY piece of information you write, add a hidden tag: [USE: 문서명 | 조항]
+       - **NO EXCEPTIONS**: Even if information seems obvious or general, you MUST tag it if it came from a [DATA_SOURCE]
+       - **VERIFICATION PROCESS (DO THIS FOR EVERY SENTENCE)**:
          1. Write a sentence using information from a [DATA_SOURCE]
          2. Look at that specific [DATA_SOURCE] block to find the "해당 조항" field
          3. Copy EXACTLY that clause number into your [USE: ...] tag
          4. DO NOT use a different clause number from a different [DATA_SOURCE]
-       - Place the tag immediately after using that information in your answer.
-       - Example: If [DATA_SOURCE] says "해당 조항: 5.1.3 제 3레벨(작업지침서(WI):", then use:
+         5. If you write multiple sentences, EACH sentence needs its own [USE: ...] tag
+       - **TAG PLACEMENT**: Place the tag IMMEDIATELY after the sentence or phrase that uses that information
+       - **CORRECT EXAMPLE**: If [DATA_SOURCE] says "해당 조항: 5.1.3 제 3레벨(작업지침서(WI):", then use:
          "작업지침서는 업무 지침 문서입니다.[USE: EQ-SOP-00001 | 5.1.3 제 3레벨(작업지침서(WI):]"
-       - Example WRONG: Using "5.2.2.2.2" when the information came from "5.1.3" → This is HALLUCINATION
-       - ONLY sources with [USE: ...] tags will appear in the final [참고 문서] section.
-       - If you don't tag a source, it will be excluded from references.
+       - **WRONG EXAMPLE**: Using "5.2.2.2.2" when the information came from "5.1.3" → This is HALLUCINATION
+       - **CONSEQUENCE**: ONLY sources with [USE: ...] tags will appear in the final [참고 문서] section
+       - **WARNING**: If you don't tag sources, your answer will be rejected and you'll need to search again
 
     [ANSWER FORMAT RULES]
     - Write content naturally in the body. DO NOT cite sources inline.
@@ -381,12 +383,14 @@ def call_model_node(state: SearchState):
     - DO NOT create a [참고 문서] section yourself (it's auto-generated).
     - End your answer with the [DONE] tag to signal completion.
 
-    [ANSWER FORMAT EXAMPLE]
-    작업지침서는 현장에서 수행되는 업무를 일관되게 운영하기 위한 지침 문서입니다.
+    [ANSWER FORMAT EXAMPLE - WITH TAGS]
+    작업지침서는 현장에서 수행되는 업무를 일관되게 운영하기 위한 지침 문서입니다.[USE: EQ-SOP-00001 | 5.1.3 제 3레벨(작업지침서(WI):]
 
     주요 특징은 다음과 같습니다.
-    1. 부서 또는 공정 단위의 운영 흐름과 관리 방법을 규정합니다
-    2. 세부적인 작업 방법보다는 기본적인 지침과 관리 기준을 제시합니다
+    1. 부서 또는 공정 단위의 운영 흐름과 관리 방법을 규정합니다[USE: EQ-SOP-00001 | 5.1.3 제 3레벨(작업지침서(WI):]
+    2. 세부적인 작업 방법보다는 기본적인 지침과 관리 기준을 제시합니다[USE: EQ-SOP-00001 | 5.1.3 제 3레벨(작업지침서(WI):]
+
+    작업지침서에는 청소 및 소독 방법, 실험 방법 등이 포함됩니다.[USE: EQ-SOP-00001 | 5.4.2 작업지침서 작성]
 
     [DONE]
     
@@ -397,10 +401,22 @@ def call_model_node(state: SearchState):
     - For emphasis, use brackets [ ] or line breaks
     - Write ONLY in plain text format
 
-    [IMPORTANT NOTES]
-    - [USE: ...] tags are hidden from the user - they're automatically removed and converted to the [참고 문서] section
-    - You MUST tag every piece of information you use, otherwise it won't appear in references
-    - Missing tags = missing references = user won't know which documents you used
+    [🚨 CRITICAL REQUIREMENT - READ CAREFULLY 🚨]
+    **NO TAGS = ANSWER REJECTED**
+    - Your answer WILL BE REJECTED if you don't add [USE: ...] tags
+    - Every sentence from a [DATA_SOURCE] needs a tag
+    - [USE: ...] tags are hidden from the user - they're automatically converted to (문서명 > 조항) format
+    - Missing tags = validation failure = wasted search = you'll be asked to search again
+
+    **TAG FORMAT REMINDER**:
+    [USE: 문서명 | 조항번호]
+    Example: [USE: EQ-SOP-00001 | 5.1.3 제 3레벨(작업지침서(WI):]
+
+    **SELF-CHECK BEFORE SUBMITTING**:
+    □ Did I add [USE: ...] tags to EVERY sentence?
+    □ Did I verify each clause number matches the [DATA_SOURCE]?
+    □ Are there at least 3-5 [USE: ...] tags in my answer?
+    If any answer is NO, add more tags before finishing!
 
     [CRITICAL WARNING - AVOID HALLUCINATION]
     - NEVER reuse the same clause number for multiple different pieces of information
@@ -577,71 +593,51 @@ def _ensure_reference_section(messages: List[Any], final_answer: str) -> str:
         # 2-1. LLM이 [USE: ...] 태그로 명시한 소스 추출
         used_sources = re.findall(r'\[USE:\s*([^\|\]]+)\s*\|\s*([^\]]+)\]', final_answer)
 
+        # 2-2. 태그가 없으면 실패 처리 (fallback 제거)
         if not used_sources:
-            print(f"    [참고문헌] LLM이 [USE: ...] 태그를 사용하지 않음. 검색된 상위 결과만 표시합니다.")
-            # 태그가 없으면 상위 3개 결과만 표시
-            used_sources = referenced_docs[:3]
+            print(f"🔴 [검색 에이전트 치명적 오류] LLM이 [USE: ...] 태그를 달지 않음")
+            print(f"🔴 태그 없는 답변은 검증 불가 - 오케스트레이터가 재검색 결정해야 함")
+            # 태그가 없으면 원본 그대로 반환 (Answer Agent가 검증 실패 처리)
+            return final_answer
 
-        # 2-2. 문서 존재 여부 확인 (SQL DB 조회)
+        # 2-3. 문서 존재 여부 확인 (SQL DB 조회)
         valid_docs = set()
         if _sql_store:
             try:
                 all_docs = _sql_store.list_documents()
                 valid_docs = {doc.get('doc_name') or doc.get('id') for doc in all_docs}
             except Exception as e:
-                print(f"    [참고문헌 검증 오류] {e}")
+                print(f"🔴 [참고문헌 검증 오류] {e}")
 
-        # 2-3. 태그된 소스를 문서명 기준으로 그룹화
-        doc_map = {}
+        # 2-4. 태그된 소스 검증 (존재하지 않는 문서/조항 제거)
+        validated_sources = []
         for doc_name, section in used_sources:
             doc_name = doc_name.strip()
             section = section.strip()
 
             # 문서 존재 여부 확인
             if valid_docs and doc_name not in valid_docs:
-                print(f"    [참고문헌 필터링] 존재하지 않는 문서 제외: {doc_name}")
+                print(f"🔴 [참고문헌 검증 실패] 존재하지 않는 문서: {doc_name}")
                 continue
 
-            # 조항이 너무 긴 경우 제한
-            if len(section) > 50:
-                section = section[:47] + "..."
+            validated_sources.append((doc_name, section))
 
-            if doc_name not in doc_map:
-                doc_map[doc_name] = []
+        # 검증된 소스가 없으면 실패
+        if not validated_sources:
+            print(f"🔴 [참고문헌 생성 실패] 모든 태그가 검증 실패 - 재검색 필요")
+            return final_answer
 
-            # 중복 조항 방지
-            if section not in doc_map[doc_name]:
-                doc_map[doc_name].append(section)
-
-        # 2-4. [최종 출력] - LLM이 실제로 사용한 문서만 표시
-        if doc_map:
-            ref_section = "\n\n[참고 문서]\n"
-            for doc_name, sections in doc_map.items():
-                # 조항 번호 기준 정렬 시도
-                try:
-                    unique_sections = sorted(sections, key=lambda x: [int(n) if n.isdigit() else n for n in re.split(r'\.', x.split()[0])])
-                except:
-                    unique_sections = sections
-
-                ref_section += f"- {doc_name} ({', '.join(unique_sections)})\n"
-        else:
-            ref_section = ""
-    else:
-        ref_section = ""
-
-    # 3. 답변 본문 정리 및 참고문서 섹션 추가
-    # [USE: ...] 태그 제거
-    final_answer_cleaned = re.sub(r'\[USE:\s*[^\]]+\]', '', final_answer)
-
-    # LLM이 직접 작성한 [참고 문서] 섹션 제거 (자동 생성으로 대체)
+    # 3. 답변 본문 정리 (태그는 유지, Answer Agent가 변환)
+    # LLM이 직접 작성한 [참고 문서] 섹션만 제거
     final_answer_cleaned = re.sub(
         r'\n*\[참고 문서\].*$',
         '',
-        final_answer_cleaned,
+        final_answer,
         flags=re.DOTALL
     ).strip()
 
-    return final_answer_cleaned + ref_section
+    # [USE: ...] 태그는 그대로 유지 - Answer Agent가 (문서명 > 조항) 형식으로 변환
+    return final_answer_cleaned
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 메인 엔트리 포인트
@@ -673,6 +669,36 @@ def retrieval_agent_node(state: Dict[str, Any]) -> Dict[str, Any]:
 
     # 참고문헌 섹션 자동 추가
     final_msg_with_refs = _ensure_reference_section(result["messages"], final_msg)
+
+    # ========================================
+    # 검증 (Validation)
+    # ========================================
+    try:
+        from backend.validation import validate_grounding, validate_format
+
+        # Grounding 검증
+        grounding_result = validate_grounding(final_msg, result["messages"])
+        if not grounding_result["valid"]:
+            print(f"🔴 [검색 에이전트 검증 실패 - Grounding]")
+            for error in grounding_result["errors"]:
+                print(f"   {error}")
+            if grounding_result.get("missing_clauses"):
+                print(f"   🔴 누락된 조항: {', '.join(grounding_result['missing_clauses'])}")
+            if grounding_result.get("invalid_citations", 0) > 0:
+                print(f"   🔴 잘못된 인용: {grounding_result['invalid_citations']}개")
+                print(f"   🔴 오류율: {grounding_result.get('error_rate', 0)*100:.1f}%")
+        else:
+            print(f"🟢 [검색 에이전트 검증 통과 - Grounding]")
+
+        # 형식 검증
+        format_result = validate_format(final_msg_with_refs)
+        if not format_result["valid"]:
+            print(f"🔴 [검색 에이전트 검증 실패 - 형식]")
+            for error in format_result["errors"]:
+                print(f"   - {error}")
+
+    except Exception as e:
+        print(f"🔴 [검증 모듈 로드 실패] {e}")
 
     # [중요] 답변 에이전트 도입을 위해 직접 답변하지 않고 context에 보고서 형태로 저장 (리스트 형태로 반환하여 누적)
     report = f"### [검색 에이전트 조사 최종 보고]\n{final_msg_with_refs}"

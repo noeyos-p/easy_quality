@@ -13,6 +13,7 @@ import re
 import json
 import operator
 import hashlib
+import difflib
 from typing import List, Dict, Optional, Any, Annotated, TypedDict, Literal
 from datetime import datetime
 
@@ -209,55 +210,29 @@ def search_sop_tool(query: str, extract_english: bool = False, keywords: List[st
 
 @tool
 def get_version_history_tool(doc_id: str) -> str:
+
     """특정 문서의 버전 히스토리를 조회"""
     global _sql_store
     if not _sql_store: return "SQL 저장소 연결 실패"
-    
     versions = _sql_store.get_document_versions(doc_id)
     if not versions: return f"{doc_id} 문서의 버전을 찾을 수 없습니다."
-    
+
     return "\n".join([f"- v{v['version']} ({v['created_at']})" for v in versions])
 
 @tool
 def compare_versions_tool(doc_id: str, v1: str, v2: str) -> str:
+
     """두 버전의 문서 내용을 비교하여 반환"""
     global _sql_store
     if not _sql_store: return ""
     
-    # [단순 텍스트 비교 대신 조항 단위 Diff 기능 사용]
-    diffs = _sql_store.get_clause_diff(doc_id, v1, v2)
-    
-    if not diffs:
-        return "차이점이 발견되지 않았습니다."
-    if isinstance(diffs[0], dict) and "error" in diffs[0]:
-        return diffs[0]["error"]
-        
-    # Diff 결과 포맷팅
-    report = [f"=== {doc_id} v{v1} vs v{v2} 조항 단위 비교 ==="]
-    for d in diffs:
-        ctype = d['change_type']
-        clause = d['clause']
-        if ctype == 'ADDED':
-            report.append(f"[(+) 추가] {clause}조: {d['v2_content'][:100]}...")
-        elif ctype == 'DELETED':
-            report.append(f"[(-) 삭제] {clause}조: {d['v1_content'][:100]}...")
-        elif ctype == 'MODIFIED':
-            report.append(f"[*] 변경] {clause}조\n  - v{v1}: {d['v1_content'][:100]}...\n  - v{v2}: {d['v2_content'][:100]}...")
-            
-    return "\n".join(report)
 
-@tool
-def get_impact_analysis_tool(doc_id: str) -> str:
-    """특정 문서 변경 시 파급 효과(Impact Analysis) 조회"""
-    import json
-    global _graph_store
-    if not _graph_store: return "그래프 저장소 연결 실패"
+    doc1 = _sql_store.get_document_by_id(doc_id, v1)
+    doc2 = _sql_store.get_document_by_id(doc_id, v2)
     
-    impacts = _graph_store.get_impact_analysis(doc_id)
-    if not impacts:
-        return "이 문서의 변경으로 인해 영향을 받는 다른 문서는 발견되지 않았습니다."
-        
-    return json.dumps(impacts, ensure_ascii=False)
+    if not doc1 or not doc2: return "비교할 버전을 찾을 수 없습니다."
+    
+    return f"=== v{v1} ===\n{doc1.get('content')[:2000]}\n\n=== v{v2} ===\n{doc2.get('content')[:2000]}"
 
 @tool
 def get_references_tool(doc_id: str) -> str:
@@ -322,13 +297,18 @@ def get_sop_headers_tool(doc_id: str) -> str:
 class AgentState(TypedDict):
     query: str
     messages: Annotated[List[Any], operator.add]
-    next_agent: Literal["retrieval", "comparison", "graph", "answer", "end"]
+
+    next_agent: Literal["retrieval", "graph", "comparison", "answer", "end"]
     final_answer: str
     context: Annotated[List[str], operator.add]
     model_name: Optional[str]
     worker_model: Optional[str]
     orchestrator_model: Optional[str]
     loop_count: int
+    # 추적 정보 (평가용)
+    agent_calls: Optional[Dict[str, int]]  # 에이전트별 호출 횟수
+    tool_calls_log: Optional[List[Dict[str, Any]]]  # 도구 호출 로그
+    validation_results: Optional[Dict[str, Any]]  # 검증 결과
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 노드 정의 (Nodes)
@@ -336,12 +316,17 @@ class AgentState(TypedDict):
 
 def orchestrator_node(state: AgentState):
     """메인 에이전트 (OpenAI GPT-4o-mini) - 질문 분석 및 라우팅"""
-    
-    # 무한 루프 방지: 2번 이상 반복하면 강제 종료
+
+    # 추적 정보 초기화
+    agent_calls = state.get("agent_calls") or {}
+    agent_calls["orchestrator"] = agent_calls.get("orchestrator", 0) + 1
+
+    # 무한 루프 방지: 4번 이상 반복하면 강제 종료
+    # (정상 흐름: retrieval -> orch -> graph -> orch -> answer 도 3회 필요)
     loop_count = state.get("loop_count", 0)
-    if loop_count >= 2:
+    if loop_count >= 4:
         print(f"🔴 루프 제한 도달 ({loop_count}회), 강제 종료")
-        return {"next_agent": "answer", "loop_count": loop_count + 1}
+        return {"next_agent": "answer", "loop_count": loop_count + 1, "agent_calls": agent_calls}
     
     client = get_openai_client()
     if not client:
@@ -352,7 +337,7 @@ def orchestrator_node(state: AgentState):
     
     system_prompt = """당신은 GMP 규정 시스템의 메인 오케스트레이터(Manager)입니다.
     사용자의 질문을 해결하기 위해 하위 전문가 에이전트들을 지휘하고, 그들의 보고를 검증하는 역할을 수행합니다.
-
+    
     [작업 흐름]
     1. **History 분석**: 이전 대화 내용(History)을 보고, 이미 수행된 에이전트의 보고가 있는지 확인하세요.
 
@@ -366,7 +351,7 @@ def orchestrator_node(state: AgentState):
     3. graph: **참조/인용 관계(Reference), 상위/하위 규정 관계 확인**. "참조 목록 알려줘", "어떤 규정을 따르나?", "영향 분석해줘" 등의 질문은 반드시 이 에이전트가 처리해야 합니다.
     
     [라우팅 규칙]
-    - 사용자가 "**버전**", "**이력**", "**History**", "**변경**", "**수정**" 등의 단어를 사용하여 특정 문서에 대해 질문하면 **무조건 `comparison`**을 호출하세요. (예: "SOP-001 버전 알려줘", "SOP-001 바뀐거 뭐야?")
+    - 사용자가 "**버전**", "**이력**", "**History**", "**변경**", "**수정**", "**차이**", "**비교**" 등의 단어를 사용하여 특정 문서에 대해 질문하면 **무조건 `comparison`**을 호출하세요. (예: "SOP-001 버전 알려줘", "SOP-001 바뀐거 뭐야?", "1.0과 2.0 차이가 뭐야?")
     - 사용자가 "참조 목록", "Reference", "연결된 문서" 등을 물어보면 **무조건 `graph`**를 호출하세요. `retrieval`로 본문에서 찾으려 하지 마세요.
     - 이전 대화에서 이미 특정 문서(SOP ID)가 식별되었다면, 그 ID를 바탕으로 전문 에이전트(graph, comparison)를 즉시 호출하세요.
     - 만약 서브 에이전트가 "문서 ID를 찾지 못했다"고 보고한다면, `retrieval`을 통해 먼저 문서 ID를 찾은 후 다시 해당 에이전트를 부르세요.
@@ -416,16 +401,25 @@ def orchestrator_node(state: AgentState):
         content = response.choices[0].message.content
         decision = safe_json_loads(content)
         
-        next_action = decision.get("next_action", "finish")
-        
-        if next_action == "finish":
-            return {"next_agent": "answer", "loop_count": loop_count + 1}
-            
-        return {"next_agent": next_action, "loop_count": loop_count + 1}
-        
+        print(f"[DEBUG Orchestrator] LLM 응답: {content}")
+        print(f"[DEBUG Orchestrator] 파싱된 결정: {decision}")
+
+        next_agent = decision.get("next_action", "answer")  # LLM이 next_action을 반환함
+        print(f"[DEBUG Orchestrator] next_agent 추출: {next_agent}")
+
+        # 검증: 허용된 값만 통과 (state와 정확히 일치)
+        ALLOWED_AGENTS = {"retrieval", "graph", "comparison", "answer"}
+        if next_agent not in ALLOWED_AGENTS:
+            print(f"🔴 잘못된 next_agent '{next_agent}' 감지, answer로 변경")
+            next_agent = "answer"
+        else:
+            print(f"✅ next_agent '{next_agent}' 검증 통과")
+
+        return {"next_agent": next_agent, "loop_count": loop_count + 1, "agent_calls": agent_calls}
+
     except Exception as e:
         print(f"Orchestrator Error: {e}")
-        return {"next_agent": "answer", "final_answer": "오류가 발생했습니다.", "loop_count": loop_count + 1}
+        return {"next_agent": "answer", "final_answer": "오류가 발생했습니다.", "loop_count": loop_count + 1, "agent_calls": agent_calls}
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 워크플로우 구성
@@ -504,7 +498,10 @@ def run_agent(query: str, session_id: str = "default", model_name: str = None, e
         "worker_model": model_name or "glm-4.7-flash",
         "orchestrator_model": "gpt-4o-mini",
         "model_name": model_name,
-        "loop_count": 0
+        "loop_count": 0,
+        "agent_calls": {},  # 에이전트 호출 추적
+        "tool_calls_log": [],  # Tool 호출 로그
+        "validation_results": {}  # 검증 결과
     }
 
     # LangGraph 실행
@@ -521,15 +518,84 @@ def run_agent(query: str, session_id: str = "default", model_name: str = None, e
 
     # context 추출 (평가용)
     context = result.get("context", [])
-    if isinstance(context, list):
-        context = "\n\n".join(context)
+    context_str = "\n\n".join(context) if isinstance(context, list) else context
+
+    # ========================================
+    # 평가 로그 생성 (agent_log)
+    # ========================================
+
+    # 1. 에이전트 호출 통계
+    agent_calls = result.get("agent_calls", {})
+
+    # 2. [USE: ...] 태그 분석
+    use_tags = re.findall(r'\[USE:\s*([^\|]+)\s*\|\s*([^\]]+)\]', final_answer)
+    use_tag_count = len(use_tags)
+
+    # 3. Tool 호출 로그 추출 (messages에서)
+    tool_calls_log = []
+    for msg in result.get("messages", []):
+        if isinstance(msg, dict) and msg.get("role") == "tool":
+            tool_calls_log.append({
+                "role": "tool",
+                "content_preview": msg.get("content", "")[:200]
+            })
+        elif hasattr(msg, "role") and msg.role == "tool":
+            content = msg.content if hasattr(msg, "content") else str(msg)
+            tool_calls_log.append({
+                "role": "tool",
+                "content_preview": content[:200]
+            })
+
+    # 4. 검증 결과 분석
+    validation_summary = {
+        "grounding": "unknown",
+        "format": "unknown",
+        "has_use_tags": use_tag_count > 0,
+        "no_info_found": False
+    }
+
+    # NO_INFO_FOUND 감지
+    if "검색된 문서 내에서 관련 정보를 찾을 수 없" in final_answer or \
+       "검색된 정보가 없습니다" in final_answer or \
+       "[NO_INFO_FOUND]" in final_answer:
+        validation_summary["no_info_found"] = True
+
+    # 5. 검색 조건 추출 (context에서)
+    search_conditions = []
+    for ctx in context:
+        # [Deep Search] 로그에서 검색 조건 추출 시도
+        if "Deep Search" in ctx or "검색" in ctx:
+            search_conditions.append({
+                "query": query,
+                "preview": ctx[:150]
+            })
 
     return {
         "answer": final_answer,
         "agent_log": {
-            "context": context,
+            # 기본 정보
+            "query": query,
+            "context": context_str,
             "next_agent": result.get("next_agent"),
-            "loop_count": result.get("loop_count", 0)
+            "loop_count": result.get("loop_count", 0),
+
+            # 에이전트 호출 통계
+            "agent_calls": agent_calls,
+            "total_agent_calls": sum(agent_calls.values()) if agent_calls else 0,
+
+            # Tool 호출 정보
+            "tool_calls_count": len(tool_calls_log),
+            "tool_calls_log": tool_calls_log[:5],  # 최대 5개만
+
+            # 태그 분석
+            "use_tag_count": use_tag_count,
+            "use_tags_sample": use_tags[:3] if use_tags else [],  # 샘플 3개
+
+            # 검증 결과
+            "validation_summary": validation_summary,
+
+            # 검색 조건
+            "search_conditions": search_conditions[:3]  # 최대 3개
         },
         "wrapper": True
     }
@@ -544,5 +610,6 @@ AGENT_TOOLS = [
     get_version_history_tool,
     compare_versions_tool,
     get_references_tool,
-    get_sop_headers_tool
+    get_sop_headers_tool,
+    compare_versions_tool
 ]

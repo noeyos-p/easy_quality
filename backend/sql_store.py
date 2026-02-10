@@ -94,8 +94,8 @@ class SQLStore:
         -- [Migration] doc_name 컬럼이 존재할 경우 삭제 (v2 전환 완료 후)
         DO $$ 
         BEGIN 
-            IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='document' AND column_name='doc_name') THEN
-                ALTER TABLE document DROP COLUMN doc_name;
+            IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='document' AND column_name='doc_name_id') THEN
+                ALTER TABLE document ALTER COLUMN doc_name_id DROP NOT NULL;
             END IF;
         END $$;
         """
@@ -284,6 +284,25 @@ class SQLStore:
         except Exception as e:
             print(f"🔴 [SQLStore] 문서 조회 실패: {e}")
             return None
+
+    def get_document_versions(self, doc_name: str) -> List[Dict]:
+        """문서의 버전 히스토리 조회"""
+        query = """
+            SELECT d.id, dn.name as doc_name_id, d.version, d.created_at, d.approved_at, 
+                   d.effective_at, d.deprecated_at, d.status, d.doc_type
+            FROM document d
+            JOIN doc_name dn ON d.doc_name_id = dn.id
+            WHERE dn.name = %s
+            ORDER BY d.created_at DESC
+        """
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    cur.execute(query, (doc_name,))
+                    return cur.fetchall()
+        except Exception as e:
+            print(f"❌ [SQLStore] 버전 히스토리 조회 실패: {e}")
+            return []
 
     def get_chunks_by_document(self, document_id: int) -> List[Dict]:
         """특정 문서의 모든 청크 조회"""

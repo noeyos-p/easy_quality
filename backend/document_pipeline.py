@@ -160,6 +160,41 @@ def _clean_noise_globally(markdown: str) -> str:
     return result.strip()
 
 
+def _normalize_text(text: str) -> str:
+    """텍스트 정규화: 불필요한 줄바꿈 제거, 한영 문단 구분 유지"""
+
+    # 1. 연속된 줄바꿈 정리 (3개 이상 -> 2개)
+    text = re.sub(r'\n{3,}', '\n\n', text)
+
+    # 2. 문단별 처리
+    paragraphs = text.split('\n\n')
+    normalized_paragraphs = []
+
+    for para in paragraphs:
+        para = para.strip()
+        if not para:
+            continue
+
+        # 한글 비율 체크 (한글 문단 vs 영어 문단 구분)
+        korean_chars = len(re.findall(r'[가-힣]', para))
+        total_chars = len(re.sub(r'\s', '', para))
+        is_korean = korean_chars > total_chars * 0.3  # 30% 이상이 한글
+
+        # 같은 언어 문단 내에서만 줄바꿈 제거
+        # 단, 문장 끝(마침표 등)은 유지
+        if '\n' in para:
+            # 줄바꿈을 공백으로 치환
+            normalized = para.replace('\n', ' ')
+            # 연속 공백 제거
+            normalized = re.sub(r'\s+', ' ', normalized)
+            normalized_paragraphs.append(normalized.strip())
+        else:
+            normalized_paragraphs.append(para)
+
+    # 3. 문단 재결합 (한영 구분은 \n\n 유지)
+    return '\n\n'.join(normalized_paragraphs)
+
+
 def _split_recursive(text: str, chunk_size: int, chunk_overlap: int) -> List[str]:
     """긴 텍스트를 재귀적으로 분할 (문장, 줄바꿈 기준)"""
     if len(text) <= chunk_size:
@@ -167,13 +202,13 @@ def _split_recursive(text: str, chunk_size: int, chunk_overlap: int) -> List[str
 
     separators = ["\n\n", "\n", ". ", " ", ""]
     chunks = []
-    
+
     parts = []
     for sep in separators:
         if sep in text:
             parts = text.split(sep)
             break
-    
+
     if not parts:
         return [text[:chunk_size]]
 
@@ -185,10 +220,10 @@ def _split_recursive(text: str, chunk_size: int, chunk_overlap: int) -> List[str
             if current_chunk:
                 chunks.append(current_chunk.strip())
             current_chunk = p + (sep if sep != "" else "")
-            
+
     if current_chunk:
         chunks.append(current_chunk.strip())
-        
+
     return chunks
 
 
@@ -282,14 +317,31 @@ def parse_clauses(markdown: str, max_level: int = None) -> List[Dict]:
             continue
 
         # 제목과 본문 분리
-        first_line_end = content.find('\n')
-        if first_line_end > 0:
-            title = content[:first_line_end].strip()
-            body = content[first_line_end:].strip()
+        # v8.5: 제목이 여러 줄인 경우 대비 - 첫 문장 또는 200자까지
+
+        # 1. 마침표나 콜론으로 끝나는 첫 문장 찾기
+        sentence_ends = ['. ', '.\n', ': ', ':\n']
+        title_end = -1
+
+        for end_marker in sentence_ends:
+            pos = content.find(end_marker)
+            if pos > 0 and pos < 300:  # 300자 이내의 마침표/콜론
+                title_end = pos + 1
+                break
+
+        if title_end > 0:
+            # 마침표/콜론으로 끝나는 첫 문장을 제목으로
+            title = content[:title_end].replace('\n', ' ').strip()
+            body = content[title_end:].strip()
         else:
-            # 개행이 없으면 처음 100자를 제목으로
-            title = content[:100].strip()
-            body = content[100:].strip() if len(content) > 100 else ""
+            # 마침표가 없으면 첫 200자를 제목으로
+            first_newline = content.find('\n\n')  # 문단 구분
+            if 0 < first_newline < 200:
+                title = content[:first_newline].replace('\n', ' ').strip()
+                body = content[first_newline:].strip()
+            else:
+                title = content[:200].replace('\n', ' ').strip()
+                body = content[200:].strip() if len(content) > 200 else ""
 
         # 본문에서 노이즈 제거
         # body = _clean_pdf_noise(body) # 전역 정제로 대체됨
@@ -494,14 +546,18 @@ def create_chunks(clauses: List[Dict], doc_id: str, doc_title: str,
             meta = _default_metadata()
 
         # 2. 긴 조항 재분할 (벡터 검색 품질 향상)
-        # v8.3: 사용자의 요청에 따라 text 필드에는 순수 본문(content)만 포함
-        text_to_split = content
-        split_parts = _split_recursive(text_to_split, chunk_size, chunk_overlap)
-        
-        for p_idx, part in enumerate(split_parts):
-            # v8.3: 필드 분리에 따라 text 필드에서는 중복된 제목 프리픽스 제거 (본문 중심 임베딩)
-            # 검색 엔진 레벨에서 clause, title 필드를 별도로 활용하므로 text는 순수 본문 위주로 구성
-            chunk_text = part
+        # v8.7: content가 500자 이상이면 분할, 각 청크에 title 포함
+
+        # content가 500자를 넘으면 여러 파트로 분할
+        if len(content) > 500:
+            content_parts = _split_recursive(content, chunk_size=500, chunk_overlap=50)
+        else:
+            content_parts = [content]
+
+        # 각 content 파트마다 title을 붙여서 청크 생성
+        for p_idx, content_part in enumerate(content_parts):
+            # 각 청크 = title + content_part
+            chunk_text = f"{title}\n\n{content_part}"
             
             # 최종 메타데이터
             full_meta = {
@@ -512,7 +568,7 @@ def create_chunks(clauses: List[Dict], doc_id: str, doc_title: str,
                 "clause_level": level,
                 "main_section": clause_id.split('.')[0] if '.' in str(clause_id) else clause_id,
                 "page": clause.get("page", 1),
-                "chunk_part": p_idx + 1 if len(split_parts) > 1 else None,
+                "chunk_part": p_idx + 1 if len(content_parts) > 1 else None,
                 **meta
             }
 
