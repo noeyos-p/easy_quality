@@ -1,7 +1,7 @@
 """
-SOP 멀티 에이전트 시스템 v13.0
+SOP 멀티 에이전트 시스템 v14.0
 - Orchestrator (Main): OpenAI (GPT-4o-mini) - 질문 분석 및 라우팅, 최종 답변
-- Specialized Sub-Agents: Z.AI (GLM-4.7) - 실행 및 데이터 처리
+- Specialized Sub-Agents: OpenAI (GPT-4o-mini) - 실행 및 데이터 처리
   1. Retrieval Agent: 문서 검색 및 추출
   2. Summarization Agent: 문서/조항 요약
   3. Comparison Agent: 버전 비교
@@ -23,6 +23,7 @@ from datetime import datetime
 
 try:
     from openai import OpenAI
+    from langchain_openai import ChatOpenAI
 except ImportError:
     pass
 
@@ -103,12 +104,23 @@ def init_agent_tools(vector_store_module, graph_store_instance, sql_store_instan
         pass
 
 def get_openai_client():
+    """OpenAI 클라이언트 반환 (직접 API 호출용)"""
     global _openai_client
     if not _openai_client:
         api_key = os.getenv("OPENAI_API_KEY")
         if api_key:
             _openai_client = OpenAI(api_key=api_key)
     return _openai_client
+
+_langchain_llm = None
+
+def get_langchain_llm(model: str = "gpt-4o-mini", temperature: float = 0.0):
+    """LangChain ChatOpenAI 반환 (LangSmith 추적용)"""
+    return ChatOpenAI(
+        model=model,
+        temperature=temperature,
+        openai_api_key=os.getenv("OPENAI_API_KEY")
+    )
 
 def get_zai_client():
     global _zai_client
@@ -495,7 +507,7 @@ def run_agent(query: str, session_id: str = "default", model_name: str = None, e
         "query": query,
         "messages": [{"role": "user", "content": query}],
         "next_agent": "orchestrator",
-        "worker_model": model_name or "glm-4.7-flash",
+        "worker_model": model_name or "gpt-4o-mini",
         "orchestrator_model": "gpt-4o-mini",
         "model_name": model_name,
         "loop_count": 0,

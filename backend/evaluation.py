@@ -356,7 +356,7 @@ JSON 형식으로 답변:
         results = {}
 
         print("\\n" + "="*80)
-        print("🔍 LLM as a Judge 평가 시작 (RDB 검증 포함)")
+        print("LLM as a Judge 평가 시작 (RDB 검증 포함)")
         print("="*80)
 
         if "faithfulness" in metrics and context:
@@ -384,7 +384,7 @@ JSON 형식으로 답변:
         avg_score = sum(scores) / len(scores) if scores else 0
 
         print("\\n" + "="*80)
-        print(f"📊 평가 완료 - 평균 점수: {avg_score:.1f}/5")
+        print(f"평가 완료 - 평균 점수: {avg_score:.1f}/5")
         print("="*80)
 
         results["average_score"] = round(avg_score, 1)
