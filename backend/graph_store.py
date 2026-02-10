@@ -134,6 +134,18 @@ class Neo4jGraphStore:
                 MERGE (d)-[:IS_TYPE]->(dt)
             """, doc_id=doc_id, type_code=type_code)
 
+    def init_type_hierarchy(self):
+        """문서 타입 간 계층 관계(SOP > WI > FORM) 보장"""
+        with self.driver.session(database=self.database) as session:
+            session.run("""
+                MATCH (sop:DocumentType {code: 'SOP'})
+                MATCH (wi:DocumentType {code: 'WI'})
+                MATCH (frm:DocumentType) WHERE frm.code IN ['FORM', 'FRM']
+                MERGE (sop)-[:SUPERIOR_TO]->(wi)
+                MERGE (wi)-[:SUPERIOR_TO]->(frm)
+            """)
+        print("🟢 문서 타입 계층 구조(SUPERIOR_TO) 초기화 완료")
+
     def create_concept(self, concept_id: str, name_kr: str, name_en: str, description: str = ""):
         """Concept 노드 생성 (관리 영역)"""
         with self.driver.session(database=self.database) as session:
@@ -528,8 +540,8 @@ def upload_document_to_graph(graph: Neo4jGraphStore, result: dict, filename: str
         doc_type_code = "WI"
         doc_type_kr = "작업지침서"
         doc_type_en = "Work Instruction"
-    elif doc_id.startswith("EQ-FORM"):
-        doc_type_code = "FORM"
+    elif doc_id.startswith("EQ-FORM") or doc_id.startswith("EQ-FRM"):
+        doc_type_code = "FRM"
         doc_type_kr = "양식"
         doc_type_en = "Form"
 
@@ -546,7 +558,7 @@ def upload_document_to_graph(graph: Neo4jGraphStore, result: dict, filename: str
     doc_types = [
         ("SOP", "표준운영절차서", "Standard Operating Procedure"),
         ("WI", "작업지침서", "Work Instruction"),
-        ("FORM", "양식", "Form"),
+        ("FRM", "양식", "Form"),
         ("MBR", "제조기록서", "Master Batch Record"),
         ("SPEC", "규격서", "Specification"),
     ]
@@ -659,4 +671,8 @@ def upload_document_to_graph(graph: Neo4jGraphStore, result: dict, filename: str
         if mentioned_doc != doc_id: # 자기 자신 참조 제외
             graph.create_reference(doc_id, mentioned_doc)
             print(f"  🔗 문서 레퍼런스 생성: {doc_id} -> {mentioned_doc}")
+
+    # [중요] 계층 구조 초기화 호출
+    # 매 업로드마다 실행하여 계층 관계(SOP > WI > FORM)를 보장함
+    graph.init_type_hierarchy()
 
