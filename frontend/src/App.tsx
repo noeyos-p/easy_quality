@@ -745,7 +745,7 @@ function App() {
               </div>
               <div className="py-10 px-5 bg-[#e0e0e0] flex flex-col items-center gap-[30px]">
                 {isEditing ? (
-                  <div className="w-full max-w-[1000px] h-[calc(100vh-120px)] bg-dark-deeper border border-dark-border rounded overflow-hidden shadow-[0_10px_30px_rgba(0,0,0,0.3)]">
+                  <div className="w-full max-w-[1100px] h-[calc(100vh-120px)] bg-dark-deeper border border-dark-border rounded overflow-hidden shadow-[0_10px_30px_rgba(0,0,0,0.3)]">
                     <textarea
                       className="document-editor w-full h-full bg-transparent text-[#d4d4d4] border-none p-[30px] font-mono text-[14px] leading-[1.6] resize-none outline-none"
                       value={editedContent}
@@ -762,52 +762,177 @@ function App() {
                       </div>
                     );
 
-                    // PAGE 마커를 기준으로 분할
-                    const pages = documentContent.split(/<!-- PAGE:\d+ -->/);
-                    const filteredPages = pages.filter((page, index) => index > 0 || page.trim() !== '');
+                    // 페이지 구분 없이 전체 문서를 하나로 렌더링
+                    const lines = documentContent
+                      .replace(/<!-- PAGE:\d+ -->/g, '') // PAGE 마커 제거
+                      .split('\n');
+
+                    // 상태 변수
+                    let globalDepth = 0;
+                    let globalLastWasSection = false;
+                    const indentIncrement = 12; // depth마다 증가량 (12, 24, 36...)
+                    const elements: React.ReactElement[] = [];
+                    let paragraphLines: string[] = [];
+                    let paragraphStartIdx = 0;
+                    let firstHeaderBlockPassed = false; // 첫 헤더 블록 통과 여부
+                    let inHeaderBlock = false; // 현재 헤더 블록 안에 있는지
+                    let endOfDocumentReached = false; // END OF DOCUMENT 마커 도달 여부
+
+                    const flushParagraph = (endIdx: number) => {
+                      if (paragraphLines.length > 0) {
+                        const paragraphText = paragraphLines.join(' ');
+                        // 조항 내용: 조항 제목과 동일한 들여쓰기 (0, 12, 24, 36...)
+                        const totalPadding = globalDepth * indentIncrement;
+
+                        elements.push(
+                          <p key={`para-${paragraphStartIdx}`} className="text-[15px] leading-[1.8] mb-[6px]" style={{ paddingLeft: `${totalPadding}px` }}>
+                            {paragraphText}
+                          </p>
+                        );
+                        paragraphLines = [];
+                        // globalLastWasSection은 여기서 false로 바꾸지 않음 (다음 조항이 나올 때까지 유지)
+                      }
+                    };
+
+                    lines.forEach((line, lineIdx) => {
+                      const trimmedLine = line.trim();
+
+                      // END OF DOCUMENT 마커 확인
+                      if (/^\*\*\*END OF DOCUMENT\*\*\*/.test(trimmedLine)) {
+                        endOfDocumentReached = true;
+                        return;
+                      }
+
+                      // END OF DOCUMENT 이후의 모든 내용 무시
+                      if (endOfDocumentReached) {
+                        return;
+                      }
+
+                      // 빈 줄 - 무시 (문단을 flush하지 않음)
+                      if (trimmedLine === '') {
+                        return;
+                      }
+
+                      // 조항 번호 패턴 먼저 매칭
+                      const sectionMatch = trimmedLine.match(/^(\d+(?:\.\d+)*)\.?\s+(.+)/);
+
+                      // 페이지 번호인지 확인 ("1. of 13", "2. of 13" 등)
+                      if (sectionMatch && /^of\s+\d+$/i.test(sectionMatch[2].trim())) {
+                        return; // 페이지 번호는 완전히 무시
+                      }
+
+                      // 헤더 감지
+                      const isHeader = (
+                        /^Number:/i.test(trimmedLine) ||
+                        /^Version:/i.test(trimmedLine) ||
+                        /^Effective Date:/i.test(trimmedLine) ||
+                        /^Owning Department/i.test(trimmedLine) ||
+                        /^Title\s+GMP/i.test(trimmedLine) ||
+                        /^GMP 문서 체계$/i.test(trimmedLine) ||
+                        /for Drug Master File/i.test(trimmedLine) ||
+                        /품질경영실/i.test(trimmedLine)
+                      );
+
+                      if (isHeader) {
+                        if (!firstHeaderBlockPassed) {
+                          // 첫 헤더 블록은 유지
+                          inHeaderBlock = true;
+                          // 계속 진행하여 텍스트로 렌더링
+                        } else {
+                          // 이후 헤더 블록은 제거
+                          return;
+                        }
+                      } else if (inHeaderBlock) {
+                        // 헤더가 아닌 줄을 만나면 헤더 블록 종료
+                        inHeaderBlock = false;
+                        firstHeaderBlockPassed = true;
+                      }
+
+                      if (sectionMatch) {
+                        flushParagraph(lineIdx);
+
+                        const sectionNum = sectionMatch[1];
+                        const sectionText = sectionMatch[2];
+                        const parts = sectionNum.split('.');
+                        globalDepth = parts.length - 1;
+
+                        const displayText = `${sectionNum} ${sectionText}`;
+                        // 조항 제목: depth에 따라 증가 (0, 12, 24, 36...)
+                        const sectionBasePadding = globalDepth * indentIncrement;
+
+                        const sectionStyle = {
+                          paddingLeft: `${sectionBasePadding}px`
+                        };
+
+                        // 최상위 조항 - 볼드, 간격 증가
+                        if (globalDepth === 0) {
+                          elements.push(
+                            <div key={`section-${lineIdx}`} className="text-[16px] font-bold mt-[60px] mb-[8px] text-[#1a1a1a] border-b border-[#e9ecef] pb-[10px]" style={sectionStyle}>
+                              {displayText}
+                            </div>
+                          );
+                        } else {
+                          // 하위 조항, 간격 증가
+                          elements.push(
+                            <div key={`section-${lineIdx}`} className="text-[15px] font-normal mt-[28px] mb-[8px] text-[#2c3e50]" style={sectionStyle}>
+                              {displayText}
+                            </div>
+                          );
+                        }
+                        globalLastWasSection = true; // 새 조항의 플래그 설정
+                        return;
+                      }
+
+                      // 구분선
+                      if (/^={10,}/.test(trimmedLine)) {
+                        flushParagraph(lineIdx);
+                        elements.push(
+                          <div key={`separator-${lineIdx}`} className="text-[#bdc3c7] tracking-[2px] my-4 font-mono">
+                            {trimmedLine}
+                          </div>
+                        );
+                        return;
+                      }
+
+                      // 일반 텍스트 - 언어 감지하여 문단 분리
+                      const koreanChars = trimmedLine.match(/[가-힣]/g)?.length || 0;
+                      const englishChars = trimmedLine.match(/[a-zA-Z]/g)?.length || 0;
+                      const totalChars = koreanChars + englishChars;
+
+                      const isKoreanLine = totalChars > 0 && (koreanChars / totalChars) > 0.3;
+                      const isEnglishLine = totalChars > 0 && (englishChars / totalChars) > 0.7;
+
+                      // 이전 줄과 언어가 다르면 문단 분리
+                      if (paragraphLines.length > 0) {
+                        const prevLine = paragraphLines[paragraphLines.length - 1];
+                        const prevKorean = (prevLine.match(/[가-힣]/g)?.length || 0);
+                        const prevEnglish = (prevLine.match(/[a-zA-Z]/g)?.length || 0);
+                        const prevTotal = prevKorean + prevEnglish;
+                        const wasPrevKorean = prevTotal > 0 && (prevKorean / prevTotal) > 0.3;
+
+                        // 한글 → 영어 전환: 문단 분리
+                        if (wasPrevKorean && isEnglishLine) {
+                          flushParagraph(lineIdx);
+                          paragraphStartIdx = lineIdx;
+                        }
+                      }
+
+                      if (paragraphLines.length === 0) {
+                        paragraphStartIdx = lineIdx;
+                      }
+                      paragraphLines.push(trimmedLine);
+                    });
+
+                    // 마지막 문단 처리
+                    flushParagraph(lines.length);
 
                     return (
-                      <div className="w-full max-w-[900px] flex flex-col gap-[40px]">
-                        {filteredPages.map((page, index) => (
-                          <div key={index} className="bg-white text-[#333] py-[80px] px-[70px] shadow-[0_10px_30px_rgba(0,0,0,0.15)] min-h-[1100px] flex flex-col relative rounded">
-                            <div className="flex-1 whitespace-pre-wrap break-words text-[#2c3e50]">
-                              {(() => {
-                                let currentDepth = 0;
-                                return page.split('\n').map((line, lineIdx) => {
-                                  const trimmedLine = line.trim();
-                                  if (trimmedLine === '') {
-                                    return <div key={lineIdx} className="h-3" />;
-                                  }
-
-                                  const sectionMatch = trimmedLine.match(/^(\d+(?:\.\d+)*)\.?\s+/);
-                                  if (sectionMatch) {
-                                    const parts = sectionMatch[1].split('.');
-                                    currentDepth = parts.length - 1;
-                                  }
-
-                                  const depthStyle = { paddingLeft: `${currentDepth * 32}px` };
-
-                                  if (currentDepth === 0 && sectionMatch) {
-                                    return <div key={lineIdx} className="text-[19px] font-bold mt-[40px] mb-[20px] text-[#1a1a1a] border-b-2 border-[#e9ecef] pb-[10px]" style={depthStyle}>{trimmedLine}</div>;
-                                  }
-
-                                  if (sectionMatch) {
-                                    return <div key={lineIdx} className="text-[15px] font-normal mt-[18px] mb-[6px] text-[#2c3e50]" style={depthStyle}>{trimmedLine}</div>;
-                                  }
-
-                                  if (/^={10,}/.test(trimmedLine)) {
-                                    return <div key={lineIdx} className="text-[#bdc3c7] tracking-[2px] my-4 font-mono">{trimmedLine}</div>;
-                                  }
-
-                                  return <div key={lineIdx} className="text-[15px] leading-[1.8] mb-[6px]" style={depthStyle}>{line}</div>;
-                                });
-                              })()}
-                            </div>
-                            <div className="mt-[60px] pt-5 border-t border-[#f8f9fa] flex justify-end">
-                              <span className="text-[13px] text-[#95a5a6] font-medium">{index + 1} / {filteredPages.length}</span>
-                            </div>
+                      <div className="w-full max-w-[1100px]">
+                        <div className="bg-white text-[#333] py-[60px] px-[80px] shadow-[0_10px_30px_rgba(0,0,0,0.15)] rounded">
+                          <div className="break-words text-[#2c3e50]">
+                            {elements}
                           </div>
-                        ))}
+                        </div>
                       </div>
                     );
                   })()

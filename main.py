@@ -158,38 +158,163 @@ async def lifespan(app: FastAPI):
 # ═══════════════════════════════════════════════════════════════════════════
 
 def md_to_pdf_binary(md_text: str) -> bytes:
-    """마크다운을 PDF 바이너리로 변환 (한글 폰트 미설정 상태)"""
+    """
+    마크다운을 PDF 바이너리로 변환
+    - <!-- PAGE:n --> 마커를 페이지 분할(<pdf:nextpage />)로 변환
+    - 프론트엔드 UI와 유사한 계층적 들여쓰기 및 스타일 적용
+    - Pretendard 한글 폰트 적용
+    """
     try:
         import markdown
         from xhtml2pdf import pisa
+        import re
         
-        # 1. Markdown -> HTML 변환 (GFM 익스텐션 등 추가 가능)
-        html_text = markdown.markdown(md_text, extensions=['extra', 'nl2br', 'sane_lists'])
+        # 1. 페이지 마커 변환
+        md_text = re.sub(r'<!-- PAGE:\d+ -->', '<pdf:nextpage />', md_text)
         
-        # 2. HTML -> PDF 변환
-        # 기본 스타일링 추가 (A4, 여백 등)
+        # 2. 계층적 구조 분석 및 HTML 변환 (프론트엔드 App.tsx 로직 모방)
+        lines = md_text.split('\n')
+        processed_elements = []
+        global_depth = 0
+        indent_increment = 12 # pt
+        
+        paragraph_buffer = []
+        table_buffer = []
+        in_table = False
+        
+        def flush_paragraph():
+            if paragraph_buffer:
+                text = " ".join(paragraph_buffer).strip()
+                if text:
+                    padding = global_depth * indent_increment
+                    html_text = markdown.markdown(text, extensions=['extra', 'nl2br', 'sane_lists'])
+                    processed_elements.append(f'<div style="padding-left: {padding}pt; margin-bottom: 6pt; font-size: 10pt; line-height: 1.8; color: #333;">{html_text}</div>')
+                paragraph_buffer.clear()
+
+        def flush_table():
+            if table_buffer:
+                table_md = "\n".join(table_buffer)
+                html_table = markdown.markdown(table_md, extensions=['tables'])
+                processed_elements.append(f'<div style="margin: 15pt 0;">{html_table}</div>')
+                table_buffer.clear()
+
+        for line in lines:
+            trimmed = line.strip()
+            
+            # 페이지 분할 태그 처리
+            if trimmed == '<pdf:nextpage />':
+                flush_paragraph()
+                flush_table()
+                processed_elements.append('<pdf:nextpage />')
+                in_table = False
+                continue
+            
+            # 테이블 감지
+            if trimmed.startswith('|'):
+                if not in_table:
+                    flush_paragraph()
+                    in_table = True
+                table_buffer.append(line)
+                continue
+            elif in_table and trimmed:
+                table_buffer.append(line)
+                continue
+            elif in_table and not trimmed:
+                flush_table()
+                in_table = False
+                continue
+
+            if not trimmed:
+                continue
+
+            # 조항 번호 패턴 매칭
+            section_match = re.match(r'^(\d+(?:\.\d+)*)\.?\s+(.+)', trimmed)
+            
+            # 페이지 번호 무시
+            if section_match and re.search(r'of\s+\d+', section_match.group(2), re.I):
+                continue
+
+            if section_match:
+                flush_paragraph()
+                section_num = section_match.group(1)
+                section_text = section_match.group(2)
+                depth = section_num.count('.')
+                global_depth = depth
+                
+                padding = depth * indent_increment
+                display_text = f"{section_num} {section_text}"
+                
+                if depth == 0:
+                    style = f"font-weight: bold; font-size: 12pt; margin-top: 40pt; margin-bottom: 8pt; color: #1a1a1a; border-bottom: 0.5pt solid #e9ecef; padding-bottom: 8pt; padding-left: {padding}pt;"
+                else:
+                    style = f"font-size: 11pt; margin-top: 20pt; margin-bottom: 8pt; color: #2c3e50; padding-left: {padding}pt;"
+                
+                processed_elements.append(f'<div style="{style}">{display_text}</div>')
+            else:
+                paragraph_buffer.append(trimmed)
+        
+        flush_paragraph()
+        flush_table()
+        
+        final_body_html = "".join(processed_elements)
+
+        # 3. HTML 템플릿 구성
+        font_path = "/Users/soyeon/Library/Fonts/Pretendard-Regular.ttf"
+        bold_font_path = "/Users/soyeon/Library/Fonts/Pretendard-Bold.ttf"
+        
         html_template = f"""
         <html>
         <head>
             <meta charset="utf-8">
             <style>
+                @font-face {{
+                    font-family: 'Pretendard';
+                    src: url('{font_path}');
+                }}
+                @font-face {{
+                    font-family: 'Pretendard';
+                    src: url('{bold_font_path}');
+                    font-weight: bold;
+                }}
                 @page {{
                     size: a4;
                     margin: 2cm;
+                    @frame footer {{
+                        -pdf-frame-content: footer_content;
+                        bottom: 1cm;
+                        margin-left: 2cm;
+                        margin-right: 2cm;
+                        height: 1cm;
+                    }}
                 }}
                 body {{
-                    font-family: sans-serif;
-                    line-height: 1.5;
+                    font-family: 'Malgun Gothic', 'Pretendard', sans-serif;
+                    color: #333;
                 }}
-                h1, h2, h3 {{ color: #1a1a1a; }}
-                pre {{ background-color: #f4f4f4; padding: 10px; }}
-                code {{ font-family: monospace; }}
-                table {{ width: 100%; border-collapse: collapse; margin: 10px 0; }}
-                th, td {{ border: 1px solid #ccc; padding: 8px; text-align: left; }}
+                table {{ 
+                    width: 100%; 
+                    border-collapse: collapse; 
+                    margin: 15pt 0;
+                }}
+                th, td {{ 
+                    border: 0.5pt solid #ccc; 
+                    padding: 8pt; 
+                    text-align: left; 
+                    font-size: 9pt;
+                }}
+                th {{ 
+                    background-color: #252526; 
+                    color: #22D142; 
+                    font-weight: bold; 
+                }}
+                tr:nth-child(even) {{ background-color: #fcfcfc; }}
             </style>
         </head>
         <body>
-            {html_text}
+            {final_body_html}
+            <div id="footer_content" style="text-align: center; color: #999; font-size: 9pt;">
+                Page <pdf:pagenumber>
+            </div>
         </body>
         </html>
         """
@@ -201,66 +326,10 @@ def md_to_pdf_binary(md_text: str) -> bytes:
             raise Exception("PDF 생성 중 오류 발생")
             
         return out.getvalue()
-    except ImportError:
-        print("⚠ PDF 변환 라이브러리(xhtml2pdf, markdown)가 설치되어 있지 않습니다.")
-        raise HTTPException(500, "서버에 PDF 변환 라이브러리가 설치되어 있지 않습니다.")
     except Exception as e:
         print(f"⚠ PDF 변환 실패: {e}")
-        raise HTTPException(500, f"PDF 변환 중 오류가 발생했습니다: {str(e)}")
-
-# ═══════════════════════════════════════════════════════════════════════════
-# PDF 변환 유틸리티
-# ═══════════════════════════════════════════════════════════════════════════
-
-def md_to_pdf_binary(md_text: str) -> bytes:
-    """마크다운을 PDF 바이너리로 변환 (한글 폰트 미설정 상태)"""
-    try:
-        import markdown
-        from xhtml2pdf import pisa
-        
-        # 1. Markdown -> HTML 변환 (GFM 익스텐션 등 추가 가능)
-        html_text = markdown.markdown(md_text, extensions=['extra', 'nl2br', 'sane_lists'])
-        
-        # 2. HTML -> PDF 변환
-        # 기본 스타일링 추가 (A4, 여백 등)
-        html_template = f"""
-        <html>
-        <head>
-            <meta charset="utf-8">
-            <style>
-                @page {{
-                    size: a4;
-                    margin: 2cm;
-                }}
-                body {{
-                    font-family: sans-serif;
-                    line-height: 1.5;
-                }}
-                h1, h2, h3 {{ color: #1a1a1a; }}
-                pre {{ background-color: #f4f4f4; padding: 10px; }}
-                code {{ font-family: monospace; }}
-                table {{ width: 100%; border-collapse: collapse; margin: 10px 0; }}
-                th, td {{ border: 1px solid #ccc; padding: 8px; text-align: left; }}
-            </style>
-        </head>
-        <body>
-            {html_text}
-        </body>
-        </html>
-        """
-        
-        out = BytesIO()
-        pisa_status = pisa.CreatePDF(html_template, dest=out, encoding='utf-8')
-        
-        if pisa_status.err:
-            raise Exception("PDF 생성 중 오류 발생")
-            
-        return out.getvalue()
-    except ImportError:
-        print("⚠ PDF 변환 라이브러리(xhtml2pdf, markdown)가 설치되어 있지 않습니다.")
-        raise HTTPException(500, "서버에 PDF 변환 라이브러리가 설치되어 있지 않습니다.")
-    except Exception as e:
-        print(f"⚠ PDF 변환 실패: {e}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(500, f"PDF 변환 중 오류가 발생했습니다: {str(e)}")
 
 def md_to_docx_binary(md_text: str, title: str) -> bytes:
