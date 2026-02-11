@@ -87,6 +87,46 @@ body {
   gap: 8px;
 }
 
+.header-actions {
+  display: flex;
+  gap: 8px;
+  margin-left: 16px;
+}
+
+.header-action-btn {
+  background: var(--bg-hover);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  padding: 4px 12px;
+  font-size: 11px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.header-action-btn:hover {
+  background: var(--border);
+  border-color: var(--text-secondary);
+}
+
+.header-action-btn.edit-btn {
+  color: var(--accent);
+}
+
+.header-action-btn.save-btn {
+  background: #007acc;
+  color: white;
+  border-color: #007acc;
+}
+
+.header-action-btn.save-btn:hover {
+  background: #0062a3;
+}
+
+.header-action-btn.cancel-btn {
+  color: #f48fb1;
+}
+
 .icon-btn {
   background: transparent;
   border: none;
@@ -230,6 +270,54 @@ body {
   display: flex;
   flex-direction: column;
   gap: 40px;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   문서 에디터
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.document-editor-container {
+  width: 100%;
+  max-width: 1000px;
+  height: calc(100vh - 120px);
+  background: var(--bg-darker);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+}
+
+.document-editor {
+  width: 100%;
+  height: 100%;
+  background: transparent;
+  color: #d4d4d4;
+  border: none;
+  padding: 30px;
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  font-size: 14px;
+  line-height: 1.6;
+  resize: none;
+  outline: none;
+}
+
+.document-editor::selection {
+  background: #264f78;
+}
+
+/* 스크롤바 조절 (에디터 전용) */
+.document-editor::-webkit-scrollbar {
+  width: 12px;
+}
+
+.document-editor::-webkit-scrollbar-thumb {
+  background: #3e3e42;
+  border: 3px solid var(--bg-darker);
+  border-radius: 6px;
+}
+
+.document-editor::-webkit-scrollbar-thumb:hover {
+  background: #4f4f54;
 }
 
 .document-page {

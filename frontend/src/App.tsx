@@ -65,6 +65,8 @@ function App() {
   const [activePanel, setActivePanel] = useState<'documents' | 'visualization' | null>(null)
   const [isLeftVisible, setIsLeftVisible] = useState(true)
   const [isRightVisible, setIsRightVisible] = useState(true)
+  const [isEditing, setIsEditing] = useState(false)
+  const [editedContent, setEditedContent] = useState<string>('')
 
   // @멘션 상태
   const [docNames, setDocNames] = useState<{ id: number; name: string }[]>([])
@@ -106,6 +108,60 @@ function App() {
 
     checkBackendStatus()
   }, [])
+
+  const fetchDocumentContent = async (docName: string, version?: string) => {
+    setSelectedDocument(docName)
+    setIsLoading(false)
+    setIsEditing(false) // 편집 모드 해제
+    setEditedContent('') // 편집 내용 초기화
+
+    try {
+      const url = version
+        ? `${API_URL}/rag/document/${encodeURIComponent(docName)}/content?version=${encodeURIComponent(version)}`
+        : `${API_URL}/rag/document/${encodeURIComponent(docName)}/content`
+
+      const response = await fetch(url)
+      if (response.ok) {
+        const data = await response.json()
+        setDocumentContent(data.content)
+        setEditedContent(data.content) // 초기 편집 내용 설정
+        setSelectedDocument(docName)
+        setIsEditing(false) // 문서 변경 시 편집 모드 초기화
+      }
+    } catch (error) {
+      console.error('문서 내용 조회 실패:', error)
+    }
+  }
+
+  const handleSaveDocument = async () => {
+    if (!selectedDocument) return
+
+    try {
+      const response = await fetch(`${API_URL}/rag/document/save`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          doc_name: selectedDocument,
+          content: editedContent
+        })
+      })
+
+      if (response.ok) {
+        const data = await response.json()
+        setDocumentContent(editedContent)
+        setIsEditing(false)
+        alert(`문서가 저장되었습니다. (새 버전: ${data.version})`)
+        // 문서 목록 갱신을 위해 억지로 fetchDocumentContent 호출 가능하지만
+        // 여기서는 상태만 업데이트
+      } else {
+        const errorData = await response.json()
+        alert(`저장 실패: ${errorData.detail || '알 수 없는 오류'}`)
+      }
+    } catch (error) {
+      console.error('문서 저장 중 오류 발생:', error)
+      alert('저장 중 오류가 발생했습니다.')
+    }
+  }
 
   // 문서 이름 목록 가져오기
   useEffect(() => {
@@ -368,6 +424,8 @@ function App() {
     setSelectedDocument(docId)
     if (content) {
       setDocumentContent(content)
+      setEditedContent(content) // 편집 내용도 함께 설정
+      setIsEditing(false) // 문서 선택 시 편집 모드 해제
     } else {
       // 내용이 제공되지 않으면 API에서 가져오기
       try {
@@ -378,11 +436,17 @@ function App() {
         // 원본 마크다운 content를 그대로 사용 (마크다운 렌더링은 JSX에서 처리)
         if (data.content) {
           setDocumentContent(data.content)
+          setEditedContent(data.content) // 편집 내용도 함께 설정
+          setIsEditing(false) // 문서 선택 시 편집 모드 해제
         } else {
           setDocumentContent('내용을 불러올 수 없습니다.')
+          setEditedContent('내용을 불러올 수 없습니다.')
+          setIsEditing(false)
         }
       } catch (_error) {
         setDocumentContent('문서 내용을 가져오는 중 오류가 발생했습니다.')
+        setEditedContent('문서 내용을 가져오는 중 오류가 발생했습니다.')
+        setIsEditing(false)
       }
     }
   }
@@ -405,6 +469,37 @@ function App() {
             {isLeftVisible ? '◀' : '▶'}
           </button>
           <span className="project-name">Orchestrator Agent</span>
+          {selectedDocument && (
+            <div className="header-actions">
+              {!isEditing ? (
+                <button
+                  className="header-action-btn edit-btn"
+                  onClick={() => setIsEditing(true)}
+                  title="문서 수정"
+                >
+                  수정
+                </button>
+              ) : (
+                <>
+                  <button
+                    className="header-action-btn cancel-btn"
+                    onClick={() => {
+                      setIsEditing(false)
+                      setEditedContent(documentContent || '')
+                    }}
+                  >
+                    취소
+                  </button>
+                  <button
+                    className="header-action-btn save-btn"
+                    onClick={handleSaveDocument}
+                  >
+                    저장
+                  </button>
+                </>
+              )}
+            </div>
+          )}
         </div>
         <div className="header-right">
           <span className={`status-indicator ${isConnected ? 'connected' : 'disconnected'}`}>
@@ -492,7 +587,7 @@ function App() {
                       // 문서 관리 패널로 전환
                       setActivePanel('documents')
                       // 해당 문서 내용 표시
-                      handleDocumentSelect(node.id)
+                      fetchDocumentContent(node.id)
                     }}
                     nodeCanvasObject={(node: any, ctx, globalScale) => {
                       const label = node.id
@@ -548,64 +643,74 @@ function App() {
                 <h2>{selectedDocument}</h2>
               </div>
               <div className="document-body">
-                {(() => {
-                  if (!documentContent) return null;
+                {isEditing ? (
+                  <div className="document-editor-container">
+                    <textarea
+                      className="document-editor"
+                      value={editedContent}
+                      onChange={(e) => setEditedContent(e.target.value)}
+                      placeholder="문서 내용을 수정하세요..."
+                    />
+                  </div>
+                ) : (
+                  (() => {
+                    if (!documentContent) return (
+                      <div className="empty-state">
+                        <div className="empty-icon">[FILE]</div>
+                        <h2>Select a document</h2>
+                      </div>
+                    );
 
-                  // PAGE 마커를 기준으로 분할
-                  // 예: "내용 <!-- PAGE:1 --> 내용 <!-- PAGE:2 -->"
-                  const pages = documentContent.split(/<!-- PAGE:\d+ -->/);
-                  // split 결과 첫 번째 요소가 빈 문자열일 수 있음 (문서 맨 앞에 마커가 있는 경우)
-                  const filteredPages = pages.filter((page, index) => index > 0 || page.trim() !== '');
+                    // PAGE 마커를 기준으로 분할
+                    const pages = documentContent.split(/<!-- PAGE:\d+ -->/);
+                    const filteredPages = pages.filter((page, index) => index > 0 || page.trim() !== '');
 
-                  return (
-                    <div className="document-pages-container">
-                      {filteredPages.map((page, index) => (
-                        <div key={index} className="document-page">
-                          <div className="document-page-content">
-                            {(() => {
-                              let currentDepth = 0;
-                              return page.split('\n').map((line, lineIdx) => {
-                                const trimmedLine = line.trim();
-                                if (trimmedLine === '') {
-                                  return <div key={lineIdx} className="line-spacer" />;
-                                }
+                    return (
+                      <div className="document-pages-container">
+                        {filteredPages.map((page, index) => (
+                          <div key={index} className="document-page">
+                            <div className="document-page-content">
+                              {(() => {
+                                let currentDepth = 0;
+                                return page.split('\n').map((line, lineIdx) => {
+                                  const trimmedLine = line.trim();
+                                  if (trimmedLine === '') {
+                                    return <div key={lineIdx} className="line-spacer" />;
+                                  }
 
-                                // 섹션 번호 추출 (예: 1, 1.1, 1.1.1)
-                                const sectionMatch = trimmedLine.match(/^(\d+(?:\.\d+)*)\.?\s+/);
-                                if (sectionMatch) {
-                                  const parts = sectionMatch[1].split('.');
-                                  currentDepth = parts.length - 1;
-                                }
+                                  const sectionMatch = trimmedLine.match(/^(\d+(?:\.\d+)*)\.?\s+/);
+                                  if (sectionMatch) {
+                                    const parts = sectionMatch[1].split('.');
+                                    currentDepth = parts.length - 1;
+                                  }
 
-                                const depthStyle = { paddingLeft: `${currentDepth * 32}px` };
+                                  const depthStyle = { paddingLeft: `${currentDepth * 32}px` };
 
-                                // 대항목 (depth 0)
-                                if (currentDepth === 0 && sectionMatch) {
-                                  return <div key={lineIdx} className="section-header-main" style={depthStyle}>{trimmedLine}</div>;
-                                }
+                                  if (currentDepth === 0 && sectionMatch) {
+                                    return <div key={lineIdx} className="section-header-main" style={depthStyle}>{trimmedLine}</div>;
+                                  }
 
-                                // 중항목 이상 (depth > 0)
-                                if (sectionMatch) {
-                                  return <div key={lineIdx} className="section-header-sub" style={depthStyle}>{trimmedLine}</div>;
-                                }
+                                  if (sectionMatch) {
+                                    return <div key={lineIdx} className="section-header-sub" style={depthStyle}>{trimmedLine}</div>;
+                                  }
 
-                                // 구분선
-                                if (/^={10,}/.test(trimmedLine)) {
-                                  return <div key={lineIdx} className="section-divider">{trimmedLine}</div>;
-                                }
+                                  if (/^={10,}/.test(trimmedLine)) {
+                                    return <div key={lineIdx} className="section-divider">{trimmedLine}</div>;
+                                  }
 
-                                return <div key={lineIdx} className="section-line" style={depthStyle}>{line}</div>;
-                              });
-                            })()}
+                                  return <div key={lineIdx} className="section-line" style={depthStyle}>{line}</div>;
+                                });
+                              })()}
+                            </div>
+                            <div className="page-footer">
+                              <span className="page-number">{index + 1} / {filteredPages.length}</span>
+                            </div>
                           </div>
-                          <div className="page-footer">
-                            <span className="page-number">{index + 1} / {filteredPages.length}</span>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  );
-                })()}
+                        ))}
+                      </div>
+                    );
+                  })()
+                )}
               </div>
             </div>
           ) : (
