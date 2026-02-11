@@ -27,6 +27,7 @@ def answer_agent_node(state: AgentState):
 
     # [USE: ...] 태그 수집 (참고 문서 섹션 생성용)
     use_tags = re.findall(r'\[USE:\s*([^\|]+)\s*\|\s*([^\]]+)\]', search_report)
+    print(f"[DEBUG answer.py] 총 {len(use_tags)}개 USE 태그 발견")
     doc_clauses = defaultdict(set)  # 문서별 조항 수집
 
     # [USE: 문서명 | 조항] 태그를 수집하고 제거
@@ -36,17 +37,23 @@ def answer_agent_node(state: AgentState):
         clause_info = match.group(2).strip()
 
         # 조항 정보에서 실제 조항 번호만 추출 (예: "5.1.3 제 3레벨(작업지침서(WI):" -> "5.1.3")
-        # 조항 번호는 숫자.숫자 형식
         clause_match = re.match(r'([\d\.]+)', clause_info)
+
         if clause_match:
             clean_clause = clause_match.group(1)
-            # 조항 번호가 유효한 경우만 수집 (숫자로 시작하고 최소 하나의 점이 있어야 함)
+            # 조항 번호 형식 (숫자로 시작하고 점이 있음)
             if clean_clause and '.' in clean_clause and clean_clause[0].isdigit():
                 doc_clauses[doc_name].add(clean_clause)
+                print(f"[DEBUG answer.py] ✅ 수집: {doc_name} > {clean_clause}")
             else:
-                print(f"[참고문서 필터링] 제외됨: {doc_name} > {clean_clause} (조항 형식 불일치)")
+                # 숫자만 있는 경우도 포함 (예: "1", "2")
+                doc_clauses[doc_name].add(clause_info.strip())
+                print(f"[DEBUG answer.py] ✅ 수집: {doc_name} > {clause_info.strip()}")
         else:
-            print(f"[참고문서 필터링] 제외됨: {doc_name} > {clause_info} (조항 번호 없음)")
+            # 조항 번호가 아닌 메타 정보 (예: "문서 관계", "상위 참조", "v1.0 vs v2.0")
+            # 이런 정보도 참고문서에 포함
+            doc_clauses[doc_name].add(clause_info.strip())
+            print(f"[DEBUG answer.py] ✅ 수집 (메타): {doc_name} > {clause_info.strip()}")
 
         # 인라인 인용 제거 - 빈 문자열 반환
         return ""
@@ -62,6 +69,7 @@ def answer_agent_node(state: AgentState):
     # [참고 문서] 섹션 자동 생성
     # ========================================
     if doc_clauses:
+        print(f"[DEBUG answer.py] 최종 수집된 문서: {list(doc_clauses.keys())}")
         ref_section = "\n\n[참고 문서]\n"
         for doc_name in sorted(doc_clauses.keys()):
             clauses = doc_clauses[doc_name]
@@ -71,9 +79,13 @@ def answer_agent_node(state: AgentState):
             except:
                 sorted_clauses = sorted(clauses)
 
-            ref_section += f"{doc_name}({', '.join(sorted_clauses)})\n"
+            ref_line = f"{doc_name}({', '.join(sorted_clauses)})\n"
+            print(f"[DEBUG answer.py] 참고문서 라인: {ref_line.strip()}")
+            ref_section += ref_line
 
         converted += ref_section
+    else:
+        print(f"[DEBUG answer.py] ⚠️ doc_clauses가 비어있음!")
 
     # [DONE] 태그를 마지막에 추가
     converted += "\n[DONE]"
