@@ -1,5 +1,4 @@
 import { useState, useEffect } from 'react';
-import './DocumentManagementPanel.css';
 
 const API_URL = 'http://localhost:8000';
 
@@ -118,7 +117,7 @@ export default function DocumentManagementPanel({ onDocumentSelect }: DocumentMa
         : `${API_URL}/rag/document/${docName}/content`;
 
       const response = await fetch(url);
-      const data = await response.json();
+      await response.json();
 
       // App.tsx의 뷰어에 표시
       if (onDocumentSelect) {
@@ -202,53 +201,74 @@ export default function DocumentManagementPanel({ onDocumentSelect }: DocumentMa
   };
 
   return (
-    <div className="document-management-panel">
-      <div className="panel-header">
-        <h2>문서 관리</h2>
-        <div className="header-actions">
+    <div className="w-full bg-dark-light border-r border-dark-border flex flex-col h-full overflow-hidden">
+
+      {/* panel-header */}
+      <div className="px-4 py-3 border-b border-dark-border flex justify-between items-center">
+        <h2 className="text-[13px] font-semibold text-txt-primary m-0 uppercase tracking-[0.5px]">문서 관리</h2>
+
+        {/* header-actions */}
+        <div className="flex gap-1.5 items-center">
+          {/* btn-delete-doc */}
           <button
-            className="btn-delete-doc"
+            className="bg-dark-border text-txt-primary border-none py-1.5 px-2.5 rounded text-[12px] cursor-pointer transition-colors duration-200 disabled:opacity-40 disabled:cursor-not-allowed hover:enabled:bg-red-700 hover:enabled:text-white"
             onClick={handleDeleteDocument}
             disabled={!selectedDoc || isDeleting}
             title={selectedDoc ? `"${selectedDoc}" 삭제` : '문서를 선택하세요'}
           >
             {isDeleting ? '삭제 중...' : '- 삭제'}
           </button>
-          <button className="btn-upload" onClick={() => setIsUploadModalOpen(true)}>
+
+          {/* btn-upload */}
+          <button
+            className="bg-accent-blue text-white border-none py-1.5 px-3 rounded text-[12px] cursor-pointer flex items-center gap-1.5 transition-colors duration-200 hover:bg-[#1177bb]"
+            onClick={() => setIsUploadModalOpen(true)}
+          >
             + 업로드
           </button>
         </div>
       </div>
 
-      <div className="panel-content">
-        {/* 문서 목록 (폴더 구조) */}
-        <div className="document-list">
-          <h3>문서 목록</h3>
+      {/* panel-content */}
+      <div className="flex-1 overflow-y-auto p-2">
+
+        {/* document-list */}
+        <div className="mb-4">
+          <h3 className="text-[12px] text-txt-primary mt-0 mb-2 px-2 uppercase tracking-[0.5px]">문서 목록</h3>
+
           {groupedDocuments.size === 0 ? (
-            <p className="empty-message">문서가 없습니다.</p>
+            <p className="text-txt-secondary text-[12px] p-2 text-center">문서가 없습니다.</p>
           ) : (
             Array.from(groupedDocuments.values()).map((group) => (
-              <div key={group.category} className="document-group">
-                {/* 폴더 헤더 */}
-                <div className="folder-header" onClick={() => toggleGroup(group.category)}>
-                  <span className="folder-icon">{group.expanded ? '📂' : '📁'}</span>
-                  <span className="folder-name">{group.category}</span>
-                  <span className="folder-count">({group.documents.length})</span>
+              <div key={group.category} className="mb-1">
+
+                {/* folder-header */}
+                <div
+                  className="flex items-center gap-1.5 py-1.5 px-2 cursor-pointer rounded transition-colors duration-200 select-none hover:bg-dark-hover"
+                  onClick={() => toggleGroup(group.category)}
+                >
+                  <span className="text-[14px]">{group.expanded ? '📂' : '📁'}</span>
+                  <span className="flex-1 text-[13px] font-semibold text-txt-primary">{group.category}</span>
+                  <span className="text-[11px] text-txt-secondary">({group.documents.length})</span>
                 </div>
 
-                {/* 폴더 내 문서들 */}
+                {/* folder-content */}
                 {group.expanded && (
-                  <div className="folder-content">
+                  <div className="ml-5 border-l border-dark-border pl-1">
                     {group.documents.map((doc, idx) => (
                       <div
                         key={idx}
-                        className={`document-item ${selectedDoc === doc.doc_id ? 'active' : ''}`}
+                        className={`flex items-center py-1.5 px-2 rounded cursor-pointer transition-colors duration-200 hover:bg-dark-hover ${selectedDoc === doc.doc_id ? 'bg-dark-active' : ''}`}
                       >
-                        <div className="document-info" onClick={() => handleDocumentSelect(doc.doc_id)}>
-                          <span className="doc-icon">📄</span>
+                        {/* document-info */}
+                        <div
+                          className="flex items-center gap-1.5 text-txt-primary text-[12px] flex-1"
+                          onClick={() => handleDocumentSelect(doc.doc_id)}
+                        >
+                          <span className="text-[12px] opacity-70">📄</span>
                           <span>{doc.doc_id}</span>
                           {doc.chunk_count && (
-                            <span className="doc-chunk-count">({doc.chunk_count}개)</span>
+                            <span className="text-txt-secondary text-[11px] ml-1">({doc.chunk_count}개)</span>
                           )}
                         </div>
                       </div>
@@ -260,18 +280,23 @@ export default function DocumentManagementPanel({ onDocumentSelect }: DocumentMa
           )}
         </div>
 
-        {/* 버전 목록 */}
+        {/* version-list */}
         {selectedDoc && versions.length > 0 && (
-          <div className="version-list">
-            <h3>버전 이력</h3>
+          <div className="mb-4">
+            <h3 className="text-[12px] text-txt-primary mt-0 mb-2 px-2 uppercase tracking-[0.5px]">버전 이력</h3>
             {versions.map((ver) => (
-              <div key={ver.version} className="version-item">
-                <div className="version-info">
+              <div
+                key={ver.version}
+                className="flex justify-between items-center py-1.5 px-2 rounded transition-colors duration-200 hover:bg-dark-hover"
+              >
+                {/* version-info */}
+                <div className="flex items-center gap-2 text-txt-primary text-[12px]">
                   <span>v{ver.version}</span>
-                  <span className="version-date">{new Date(ver.created_at).toLocaleDateString()}</span>
+                  <span className="text-txt-secondary text-[11px]">{new Date(ver.created_at).toLocaleDateString()}</span>
                 </div>
+                {/* btn-icon */}
                 <button
-                  className="btn-icon"
+                  className="bg-transparent border-none text-txt-primary cursor-pointer p-1 rounded-[3px] flex items-center justify-center transition-all duration-200 hover:bg-dark-border hover:text-txt-white"
                   onClick={() => handleViewDocument(selectedDoc, ver.version)}
                   title="이 버전 보기"
                 >
@@ -284,23 +309,46 @@ export default function DocumentManagementPanel({ onDocumentSelect }: DocumentMa
 
       </div>
 
-      {/* 업로드 모달 */}
+      {/* modal-overlay */}
       {isUploadModalOpen && (
-        <div className="modal-overlay" onClick={() => setIsUploadModalOpen(false)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-            <h3>문서 업로드</h3>
+        <div
+          className="fixed inset-0 bg-black/70 flex items-center justify-center z-[1000]"
+          onClick={() => setIsUploadModalOpen(false)}
+        >
+          {/* modal-content */}
+          <div
+            className="bg-[#2d2d2d] border border-dark-border rounded-lg p-6 min-w-[400px] shadow-[0_4px_16px_rgba(0,0,0,0.5)]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="mt-0 mb-4 text-txt-primary text-[16px]">문서 업로드</h3>
+
             <input
               type="file"
               accept=".pdf"
+              className="w-full mb-4 text-txt-primary"
               onChange={(e) => setUploadFile(e.target.files?.[0] || null)}
               disabled={isUploading}
             />
-            {uploadProgress && <p className="upload-progress">{uploadProgress}</p>}
-            <div className="modal-actions">
-              <button onClick={handleUpload} disabled={isUploading || !uploadFile}>
+
+            {/* upload-progress */}
+            {uploadProgress && (
+              <p className="text-[#4ec9b0] text-[12px] mb-4">{uploadProgress}</p>
+            )}
+
+            {/* modal-actions */}
+            <div className="flex gap-2 justify-end">
+              <button
+                className="py-2 px-4 border-none rounded cursor-pointer text-[13px] transition-colors duration-200 bg-accent-blue text-white disabled:opacity-50 disabled:cursor-not-allowed hover:enabled:bg-[#1177bb]"
+                onClick={handleUpload}
+                disabled={isUploading || !uploadFile}
+              >
                 업로드
               </button>
-              <button onClick={() => setIsUploadModalOpen(false)} disabled={isUploading}>
+              <button
+                className="py-2 px-4 border-none rounded cursor-pointer text-[13px] transition-colors duration-200 bg-dark-border text-txt-primary disabled:opacity-50 disabled:cursor-not-allowed hover:enabled:bg-[#4e4e4e]"
+                onClick={() => setIsUploadModalOpen(false)}
+                disabled={isUploading}
+              >
                 취소
               </button>
             </div>

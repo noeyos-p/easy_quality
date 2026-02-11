@@ -4,9 +4,10 @@ import mermaid from 'mermaid';
 // Mermaid 초기화 설정
 mermaid.initialize({
     startOnLoad: true,
-    theme: 'dark', // 다크 테마 적용
+    theme: 'dark',
     securityLevel: 'loose',
-    fontFamily: 'inherit',
+    flowchart: { useMaxWidth: false, htmlLabels: false, padding: 16 },
+    sequence: { useMaxWidth: false },
 });
 
 interface MermaidRendererProps {
@@ -29,6 +30,14 @@ const MermaidRenderer: React.FC<MermaidRendererProps> = ({ chart }) => {
                 mermaid.render(id, chart).then((result) => {
                     if (mermaidRef.current) {
                         mermaidRef.current.innerHTML = result.svg;
+                        const svg = mermaidRef.current.querySelector('svg');
+                        if (svg) {
+                            svg.removeAttribute('width');
+                            svg.removeAttribute('height');
+                            svg.style.width = '100%';
+                            svg.style.height = 'auto';
+                            svg.style.maxWidth = 'none';
+                        }
                     }
                 });
             } catch (error) {
@@ -38,7 +47,7 @@ const MermaidRenderer: React.FC<MermaidRendererProps> = ({ chart }) => {
     }, [chart]);
 
     return (
-        <div className="mermaid-container" style={{ overflowX: 'auto', margin: '16px 0' }}>
+        <div className="mermaid-container" style={{ margin: '16px 0' }}>
             <div ref={mermaidRef} className="mermaid">
                 {chart}
             </div>

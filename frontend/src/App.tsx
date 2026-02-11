@@ -5,7 +5,14 @@ import MermaidRenderer from './components/MermaidRenderer'
 import Sidebar from './components/Sidebar'
 import DocumentManagementPanel from './components/DocumentManagementPanel'
 import ForceGraph2D from 'react-force-graph-2d'
-import './App.css'
+
+const SCORE_COLORS: Record<number, string> = {
+  5: 'bg-[#22D142] text-black',
+  4: 'bg-[#85E89D] text-black',
+  3: 'bg-[#FFD700] text-black',
+  2: 'bg-[#FFA500] text-black',
+  1: 'bg-[#FF4444] text-white',
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 타입 정의
@@ -190,17 +197,26 @@ function App() {
     }
   }, [activePanel])
 
-  // 그래프 컨테이너 크기 측정
+  // 그래프 컨테이너 크기 측정 (ResizeObserver로 CSS transition 완료 후 감지)
   useEffect(() => {
+    if (!graphContainerRef.current) return
+
     const updateSize = () => {
       if (graphContainerRef.current) {
         const { offsetWidth, offsetHeight } = graphContainerRef.current
         setGraphSize({ width: offsetWidth, height: offsetHeight })
       }
     }
+
+    const ro = new ResizeObserver(() => {
+      updateSize()
+      // 크기 변경 후 그래프 중앙 정렬
+      setTimeout(() => fgRef.current?.zoomToFit(400, 80), 50)
+    })
+    ro.observe(graphContainerRef.current)
     updateSize()
-    window.addEventListener('resize', updateSize)
-    return () => window.removeEventListener('resize', updateSize)
+
+    return () => ro.disconnect()
   }, [activePanel])
 
   const fetchGraphData = async () => {
@@ -457,23 +473,23 @@ function App() {
   // ─────────────────────────────────────────────────────────────
 
   return (
-    <div className={`app ${!isLeftVisible ? 'left-collapsed' : ''} ${!isRightVisible ? 'right-collapsed' : ''}`}>
+    <div className="flex flex-col h-screen overflow-hidden">
       {/* 헤더 */}
-      <header className="header">
-        <div className="header-left">
+      <header className="flex justify-between items-center h-[35px] bg-dark-deeper border-b border-dark-border px-4">
+        <div className="flex items-center gap-3">
           <button
-            className={`panel-toggle-btn ${!isLeftVisible ? 'off' : ''}`}
+            className={`border-none py-1 px-2 text-[14px] rounded cursor-pointer flex items-center justify-center transition-all duration-200 ${isLeftVisible ? 'bg-transparent text-txt-secondary hover:bg-dark-hover hover:text-accent' : 'bg-accent/10 text-accent'}`}
             onClick={() => setIsLeftVisible(!isLeftVisible)}
             title={isLeftVisible ? "사이드바 접기" : "사이드바 펴기"}
           >
             {isLeftVisible ? '◀' : '▶'}
           </button>
-          <span className="project-name">Orchestrator Agent</span>
+          <span className="text-[13px] text-txt-primary">Orchestrator Agent</span>
           {selectedDocument && (
-            <div className="header-actions">
+            <div className="flex gap-2 ml-4">
               {!isEditing ? (
                 <button
-                  className="header-action-btn edit-btn"
+                  className="bg-dark-hover border border-dark-border text-accent py-1 px-3 text-[11px] rounded cursor-pointer transition-all duration-200 hover:bg-dark-border hover:border-txt-secondary"
                   onClick={() => setIsEditing(true)}
                   title="문서 수정"
                 >
@@ -482,7 +498,7 @@ function App() {
               ) : (
                 <>
                   <button
-                    className="header-action-btn cancel-btn"
+                    className="bg-dark-hover border border-dark-border text-[#f48fb1] py-1 px-3 text-[11px] rounded cursor-pointer transition-all duration-200 hover:bg-dark-border hover:border-txt-secondary"
                     onClick={() => {
                       setIsEditing(false)
                       setEditedContent(documentContent || '')
@@ -491,7 +507,7 @@ function App() {
                     취소
                   </button>
                   <button
-                    className="header-action-btn save-btn"
+                    className="bg-accent-blue text-white border-accent-blue py-1 px-3 text-[11px] rounded cursor-pointer transition-all duration-200 hover:bg-[#0062a3]"
                     onClick={handleSaveDocument}
                   >
                     저장
@@ -501,12 +517,12 @@ function App() {
             </div>
           )}
         </div>
-        <div className="header-right">
-          <span className={`status-indicator ${isConnected ? 'connected' : 'disconnected'}`}>
+        <div className="flex items-center gap-2">
+          <span className={`text-[12px] ${isConnected ? 'text-accent' : 'text-[#f48771]'}`}>
             {isConnected ? '[OK]' : '[ERROR]'} {agentStatus}
           </span>
           <button
-            className={`panel-toggle-btn ${!isRightVisible ? 'off' : ''}`}
+            className={`border-none py-1 px-2 text-[14px] rounded cursor-pointer flex items-center justify-center transition-all duration-200 ${isRightVisible ? 'bg-transparent text-txt-secondary hover:bg-dark-hover hover:text-accent' : 'bg-accent/10 text-accent'}`}
             onClick={() => setIsRightVisible(!isRightVisible)}
             title={isRightVisible ? "채팅 패널 접기" : "채팅 패널 펴기"}
           >
@@ -515,58 +531,51 @@ function App() {
         </div>
       </header>
 
-      <div className="main-container">
+      <div className="flex flex-1 overflow-hidden">
         {/* 왼쪽: 사이드바 아이콘 */}
         <Sidebar activePanel={activePanel} onPanelChange={(panel) => {
           setActivePanel(panel);
           if (panel) setIsLeftVisible(true);
         }} />
 
-        {/* 문서 관리 패널 */}
-        <div className={`side-panel left ${!isLeftVisible || !activePanel ? 'collapsed' : ''}`}>
+        {/* 문서 관리 패널 (visualization 모드엔 표시 안 함) */}
+        <div className={`flex-shrink-0 bg-dark-deeper border-r border-dark-border flex flex-col overflow-hidden transition-[width,opacity,border-color] duration-300 ease-in-out ${!isLeftVisible || !activePanel || activePanel === 'visualization' ? 'w-0 opacity-0 border-r-transparent pointer-events-none' : 'w-80'}`}>
           {activePanel === 'documents' && (
             <DocumentManagementPanel onDocumentSelect={handleDocumentSelect} />
-          )}
-          {activePanel === 'visualization' && (
-            <div className="document-visualization-panel">
-              {/* 사실 visualization은 전체 화면 모드라 별도 패널이 필요 없거나 축소될 수 있음 */}
-              <div className="panel-header"><h2>시각화 설정</h2></div>
-              <div className="panel-content"><p>시각화 속성 설정 패널이 위치할 수 있습니다.</p></div>
-            </div>
           )}
         </div>
 
         {/* 가운데: 문서 뷰어 또는 그래프 시각화 */}
-        <main className="document-viewer">
+        <main className="flex-1 bg-dark-bg overflow-y-auto flex flex-col transition-all duration-300">
           {activePanel === 'visualization' ? (
             // 전체 문서 그래프 시각화
-            <div className="graph-visualization">
-              <div className="graph-header">
-                <div className="graph-header-left">
-                  <h2>전체 문서 관계 그래프</h2>
-                  <div className="graph-legend">
-                    <span className="legend-item">
-                      <span className="legend-color sop"></span>
+            <div className="flex flex-col h-full overflow-hidden">
+              <div className="flex justify-between items-center px-6 py-4 bg-dark-deeper border-b border-dark-border">
+                <div className="flex flex-col gap-2">
+                  <h2 className="text-[16px] font-medium m-0 text-txt-primary">전체 문서 관계 그래프</h2>
+                  <div className="flex gap-4 text-[12px]">
+                    <span className="flex items-center gap-1.5 text-txt-secondary">
+                      <span className="w-3 h-3 rounded-full border border-[#333] bg-[#A8E6CF] inline-block"></span>
                       SOP (표준운영절차서)
                     </span>
-                    <span className="legend-item">
-                      <span className="legend-color wi"></span>
+                    <span className="flex items-center gap-1.5 text-txt-secondary">
+                      <span className="w-3 h-3 rounded-full border border-[#333] bg-[#FFD3A5] inline-block"></span>
                       WI (작업지침서)
                     </span>
-                    <span className="legend-item">
-                      <span className="legend-color frm"></span>
+                    <span className="flex items-center gap-1.5 text-txt-secondary">
+                      <span className="w-3 h-3 rounded-full border border-[#333] bg-[#FFB3BA] inline-block"></span>
                       FRM (양식)
                     </span>
                   </div>
                 </div>
-                <div className="graph-header-right">
+                <div className="flex items-center gap-4">
                   {graphData && (
-                    <span className="graph-stats">
+                    <span className="text-[12px] text-txt-secondary">
                       문서: {graphData.nodes.length}개 | 연결: {graphData.links.length}개
                     </span>
                   )}
                   <button
-                    className="btn-center-graph"
+                    className="py-1.5 px-3 bg-dark-light text-txt-primary border border-dark-border rounded text-[12px] cursor-pointer transition-all duration-150 hover:bg-dark-hover hover:border-accent"
                     onClick={() => fgRef.current?.zoomToFit(400, 80)}
                     title="중앙으로"
                   >
@@ -574,9 +583,9 @@ function App() {
                   </button>
                 </div>
               </div>
-              <div className="graph-container" ref={graphContainerRef}>
+              <div className="graph-container flex-1 relative overflow-hidden" ref={graphContainerRef}>
                 {isLoadingGraph ? (
-                  <div className="loading-state">데이터를 불러오는 중...</div>
+                  <div className="flex items-center justify-center h-full text-txt-secondary text-[14px]">데이터를 불러오는 중...</div>
                 ) : graphData && graphData.nodes.length > 0 ? (
                   <ForceGraph2D
                     ref={fgRef}
@@ -630,7 +639,7 @@ function App() {
                     onEngineStop={() => fgRef.current?.zoomToFit(400, 80)}
                   />
                 ) : (
-                  <div className="empty-state">
+                  <div className="flex-1 flex flex-col items-center justify-center text-txt-secondary">
                     <p>그래프 데이터가 없습니다.</p>
                   </div>
                 )}
@@ -638,15 +647,15 @@ function App() {
             </div>
           ) : selectedDocument && documentContent ? (
             // 문서 내용 표시
-            <div className="document-content">
-              <div className="document-header">
-                <h2>{selectedDocument}</h2>
+            <div className="flex-1 overflow-y-auto">
+              <div className="px-6 py-4 border-b border-dark-border bg-dark-deeper">
+                <h2 className="text-[16px] font-medium text-txt-primary">{selectedDocument}</h2>
               </div>
-              <div className="document-body">
+              <div className="py-10 px-5 bg-[#e0e0e0] flex flex-col items-center gap-[30px]">
                 {isEditing ? (
-                  <div className="document-editor-container">
+                  <div className="w-full max-w-[1000px] h-[calc(100vh-120px)] bg-dark-deeper border border-dark-border rounded overflow-hidden shadow-[0_10px_30px_rgba(0,0,0,0.3)]">
                     <textarea
-                      className="document-editor"
+                      className="document-editor w-full h-full bg-transparent text-[#d4d4d4] border-none p-[30px] font-mono text-[14px] leading-[1.6] resize-none outline-none"
                       value={editedContent}
                       onChange={(e) => setEditedContent(e.target.value)}
                       placeholder="문서 내용을 수정하세요..."
@@ -655,9 +664,9 @@ function App() {
                 ) : (
                   (() => {
                     if (!documentContent) return (
-                      <div className="empty-state">
-                        <div className="empty-icon">[FILE]</div>
-                        <h2>Select a document</h2>
+                      <div className="flex-1 flex flex-col items-center justify-center text-txt-secondary">
+                        <div className="text-[64px] mb-4 opacity-50">[FILE]</div>
+                        <h2 className="text-[18px] font-medium mb-2 text-txt-primary">Select a document</h2>
                       </div>
                     );
 
@@ -666,16 +675,16 @@ function App() {
                     const filteredPages = pages.filter((page, index) => index > 0 || page.trim() !== '');
 
                     return (
-                      <div className="document-pages-container">
+                      <div className="w-full max-w-[900px] flex flex-col gap-[40px]">
                         {filteredPages.map((page, index) => (
-                          <div key={index} className="document-page">
-                            <div className="document-page-content">
+                          <div key={index} className="bg-white text-[#333] py-[80px] px-[70px] shadow-[0_10px_30px_rgba(0,0,0,0.15)] min-h-[1100px] flex flex-col relative rounded">
+                            <div className="flex-1 whitespace-pre-wrap break-words text-[#2c3e50]">
                               {(() => {
                                 let currentDepth = 0;
                                 return page.split('\n').map((line, lineIdx) => {
                                   const trimmedLine = line.trim();
                                   if (trimmedLine === '') {
-                                    return <div key={lineIdx} className="line-spacer" />;
+                                    return <div key={lineIdx} className="h-3" />;
                                   }
 
                                   const sectionMatch = trimmedLine.match(/^(\d+(?:\.\d+)*)\.?\s+/);
@@ -687,23 +696,23 @@ function App() {
                                   const depthStyle = { paddingLeft: `${currentDepth * 32}px` };
 
                                   if (currentDepth === 0 && sectionMatch) {
-                                    return <div key={lineIdx} className="section-header-main" style={depthStyle}>{trimmedLine}</div>;
+                                    return <div key={lineIdx} className="text-[19px] font-bold mt-[40px] mb-[20px] text-[#1a1a1a] border-b-2 border-[#e9ecef] pb-[10px]" style={depthStyle}>{trimmedLine}</div>;
                                   }
 
                                   if (sectionMatch) {
-                                    return <div key={lineIdx} className="section-header-sub" style={depthStyle}>{trimmedLine}</div>;
+                                    return <div key={lineIdx} className="text-[15px] font-normal mt-[18px] mb-[6px] text-[#2c3e50]" style={depthStyle}>{trimmedLine}</div>;
                                   }
 
                                   if (/^={10,}/.test(trimmedLine)) {
-                                    return <div key={lineIdx} className="section-divider">{trimmedLine}</div>;
+                                    return <div key={lineIdx} className="text-[#bdc3c7] tracking-[2px] my-4 font-mono">{trimmedLine}</div>;
                                   }
 
-                                  return <div key={lineIdx} className="section-line" style={depthStyle}>{line}</div>;
+                                  return <div key={lineIdx} className="text-[15px] leading-[1.8] mb-[6px]" style={depthStyle}>{line}</div>;
                                 });
                               })()}
                             </div>
-                            <div className="page-footer">
-                              <span className="page-number">{index + 1} / {filteredPages.length}</span>
+                            <div className="mt-[60px] pt-5 border-t border-[#f8f9fa] flex justify-end">
+                              <span className="text-[13px] text-[#95a5a6] font-medium">{index + 1} / {filteredPages.length}</span>
                             </div>
                           </div>
                         ))}
@@ -715,27 +724,27 @@ function App() {
             </div>
           ) : (
             // 빈 상태
-            <div className="empty-state">
-              <div className="empty-icon">[FILE]</div>
-              <h2>Select a document</h2>
+            <div className="flex-1 flex flex-col items-center justify-center text-txt-secondary">
+              <div className="text-[64px] mb-4 opacity-50">[FILE]</div>
+              <h2 className="text-[18px] font-medium mb-2 text-txt-primary">Select a document</h2>
             </div>
           )}
         </main>
 
         {/* 오른쪽: Agent 패널 */}
-        <aside className={`agent-panel ${!isRightVisible ? 'collapsed' : ''}`}>
-          <div className="agent-header">
-            <span className="agent-title">Agent Chat</span>
+        <aside className={`flex-shrink-0 bg-dark-deeper border-l border-dark-border flex flex-col overflow-hidden transition-[width,opacity,border-color] duration-300 ease-in-out ${!isRightVisible ? 'w-0 opacity-0 border-l-transparent pointer-events-none' : 'w-[420px]'}`}>
+          <div className="flex justify-between items-center px-4 py-2 h-[35px] border-b border-dark-border">
+            <span className="text-[13px] font-medium text-txt-primary">Agent Chat</span>
           </div>
 
-          <div className="agent-content">
+          <div className="flex-1 flex flex-col overflow-hidden">
             {/* 채팅 영역 */}
-            <div className="agent-messages-container">
+            <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-4">
               {messages.map((msg, index) => (
-                <div key={index} className={`agent-conversation ${msg.role}`}>
+                <div key={index} className="flex flex-col gap-2">
                   {msg.role === 'user' ? (
-                    <div className="user-input-display">
-                      <div className="user-input-text">
+                    <div className="bg-dark-light rounded-lg p-3 border border-dark-border">
+                      <div className="flex-1 text-[13px] text-txt-primary">
                         <ReactMarkdown
                           remarkPlugins={[remarkGfm]}
                           components={{
@@ -749,7 +758,7 @@ function App() {
                                     return (
                                       <span
                                         key={i}
-                                        className="doc-link"
+                                        className="text-accent underline cursor-pointer font-medium px-1 py-[1px] rounded transition-all duration-200 hover:bg-white/10 hover:text-accent-hover"
                                         onClick={() => handleDocumentSelect(docId)}
                                       >
                                         {part}
@@ -776,21 +785,21 @@ function App() {
                       </div>
                     </div>
                   ) : (
-                    <div className="assistant-response">
+                    <div className="flex flex-col gap-2">
                       {/* Thought Process */}
                       {msg.thoughtProcess && (
-                        <div className="thought-section">
+                        <div className="bg-dark-light rounded overflow-hidden border border-dark-border">
                           <div
-                            className="thought-header"
+                            className="flex items-center gap-2 px-3 py-2 cursor-pointer transition-colors duration-200 select-none hover:bg-dark-hover"
                             onClick={() => toggleSection(`thought-${index}`)}
                           >
-                            <span className="chevron">
+                            <span className="text-[10px] text-txt-muted w-3">
                               {expandedSections.has(`thought-${index}`) ? '▼' : '▶'}
                             </span>
-                            <span className="thought-title">Show Reasoning</span>
+                            <span className="text-[13px] text-txt-secondary font-medium">Show Reasoning</span>
                           </div>
                           {expandedSections.has(`thought-${index}`) && (
-                            <pre className="thought-content">
+                            <pre className="p-3 border-t border-dark-border text-[13px] text-txt-primary leading-[1.6] bg-dark-deeper">
                               {msg.thoughtProcess}
                             </pre>
                           )}
@@ -815,7 +824,7 @@ function App() {
                                     return (
                                       <span
                                         key={i}
-                                        className="doc-link"
+                                        className="text-accent underline cursor-pointer font-medium px-1 py-[1px] rounded transition-all duration-200 hover:bg-white/10 hover:text-accent-hover"
                                         onClick={() => handleDocumentSelect(docId)}
                                       >
                                         {part}
@@ -862,43 +871,43 @@ function App() {
                       </div>
 
                       {msg.thinkingTime && (
-                        <div className="meta-info">Time: {msg.thinkingTime}s</div>
+                        <div className="text-[11px] text-txt-muted mt-2">Time: {msg.thinkingTime}s</div>
                       )}
 
                       {/* 평가 점수 */}
                       {msg.evaluation_scores && (
-                        <div className="evaluation-section">
+                        <div className="mt-3 border-t border-dark-border pt-2">
                           <div
-                            className="evaluation-header"
+                            className="flex items-center gap-2 p-2 cursor-pointer rounded transition-colors duration-200 hover:bg-dark-hover"
                             onClick={() => toggleSection(`eval-${index}`)}
                           >
-                            <span className="chevron">
+                            <span className="text-[10px] text-txt-muted w-3">
                               {expandedSections.has(`eval-${index}`) ? '▼' : '▶'}
                             </span>
-                            <span className="evaluation-title">
+                            <span className="text-[13px] font-semibold text-txt-secondary">
                               🔍 평가 점수
                               {msg.evaluation_scores.average_score && (
-                                <span className="eval-average"> ({msg.evaluation_scores.average_score.toFixed(1)}/5.0)</span>
+                                <span className="text-[12px] text-accent font-bold ml-2"> ({msg.evaluation_scores.average_score.toFixed(1)}/5.0)</span>
                               )}
                             </span>
                           </div>
                           {expandedSections.has(`eval-${index}`) && (
-                            <div className="evaluation-content">
+                            <div className="p-3 bg-dark-deeper rounded mt-2">
                               {msg.evaluation_scores.faithfulness && (
-                                <div className="eval-metric">
-                                  <span className="eval-label">충실성 (Faithfulness):</span>
-                                  <span className={`eval-score score-${msg.evaluation_scores.faithfulness.score}`}>
+                                <div className="mb-4 pb-3 border-b border-dark-border last:mb-0 last:pb-0 last:border-b-0">
+                                  <span className="text-[12px] font-semibold text-txt-primary mr-2">충실성 (Faithfulness):</span>
+                                  <span className={`text-sm font-bold py-0.5 px-2 rounded ml-2 ${SCORE_COLORS[msg.evaluation_scores.faithfulness.score] ?? ''}`}>
                                     {msg.evaluation_scores.faithfulness.score}/5
                                   </span>
-                                  <div className="eval-reasoning">{msg.evaluation_scores.faithfulness.reasoning}</div>
+                                  <div className="text-[11px] text-txt-secondary mt-1.5 leading-[1.4] pl-1 border-l-2 border-dark-border">{msg.evaluation_scores.faithfulness.reasoning}</div>
                                   {msg.evaluation_scores.faithfulness.rdb_verification && (
-                                    <div className="rdb-verification">
-                                      <div className="rdb-header">📊 RDB 검증 결과</div>
-                                      <div className="rdb-stats">
-                                        <span className="rdb-stat">
-                                          정확도: <strong>{msg.evaluation_scores.faithfulness.rdb_verification.accuracy_rate}%</strong>
+                                    <div className="mt-2.5 p-2.5 bg-dark-deeper rounded border border-dark-border">
+                                      <div className="text-[11px] font-bold text-accent mb-2">📊 RDB 검증 결과</div>
+                                      <div className="flex gap-4 mb-2">
+                                        <span className="text-[11px] text-txt-secondary">
+                                          정확도: <strong className="text-accent text-[13px]">{msg.evaluation_scores.faithfulness.rdb_verification.accuracy_rate}%</strong>
                                         </span>
-                                        <span className="rdb-stat">
+                                        <span className="text-[11px] text-txt-secondary">
                                           검증됨: {msg.evaluation_scores.faithfulness.rdb_verification.verified_citations}/{msg.evaluation_scores.faithfulness.rdb_verification.total_citations}
                                         </span>
                                       </div>
@@ -921,17 +930,17 @@ function App() {
                                 </div>
                               )}
                               {msg.evaluation_scores.groundness && (
-                                <div className="eval-metric">
-                                  <span className="eval-label">근거성 (Groundness):</span>
-                                  <span className={`eval-score score-${msg.evaluation_scores.groundness.score}`}>
+                                <div className="mb-4 pb-3 border-b border-dark-border last:mb-0 last:pb-0 last:border-b-0">
+                                  <span className="text-[12px] font-semibold text-txt-primary mr-2">근거성 (Groundness):</span>
+                                  <span className={`text-sm font-bold py-0.5 px-2 rounded ml-2 ${SCORE_COLORS[msg.evaluation_scores.groundness.score] ?? ''}`}>
                                     {msg.evaluation_scores.groundness.score}/5
                                   </span>
-                                  <div className="eval-reasoning">{msg.evaluation_scores.groundness.reasoning}</div>
+                                  <div className="text-[11px] text-txt-secondary mt-1.5 leading-[1.4] pl-1 border-l-2 border-dark-border">{msg.evaluation_scores.groundness.reasoning}</div>
                                   {msg.evaluation_scores.groundness.rdb_verification && (
-                                    <div className="rdb-verification">
-                                      <div className="rdb-stats">
-                                        <span className="rdb-stat">
-                                          정확도: <strong>{msg.evaluation_scores.groundness.rdb_verification.accuracy_rate}%</strong>
+                                    <div className="mt-2.5 p-2.5 bg-dark-deeper rounded border border-dark-border">
+                                      <div className="flex gap-4 mb-2">
+                                        <span className="text-[11px] text-txt-secondary">
+                                          정확도: <strong className="text-accent text-[13px]">{msg.evaluation_scores.groundness.rdb_verification.accuracy_rate}%</strong>
                                         </span>
                                       </div>
                                     </div>
@@ -939,26 +948,26 @@ function App() {
                                 </div>
                               )}
                               {msg.evaluation_scores.relevancy && (
-                                <div className="eval-metric">
-                                  <span className="eval-label">관련성 (Relevancy):</span>
-                                  <span className={`eval-score score-${msg.evaluation_scores.relevancy.score}`}>
+                                <div className="mb-4 pb-3 border-b border-dark-border last:mb-0 last:pb-0 last:border-b-0">
+                                  <span className="text-[12px] font-semibold text-txt-primary mr-2">관련성 (Relevancy):</span>
+                                  <span className={`text-sm font-bold py-0.5 px-2 rounded ml-2 ${SCORE_COLORS[msg.evaluation_scores.relevancy.score] ?? ''}`}>
                                     {msg.evaluation_scores.relevancy.score}/5
                                   </span>
-                                  <div className="eval-reasoning">{msg.evaluation_scores.relevancy.reasoning}</div>
+                                  <div className="text-[11px] text-txt-secondary mt-1.5 leading-[1.4] pl-1 border-l-2 border-dark-border">{msg.evaluation_scores.relevancy.reasoning}</div>
                                 </div>
                               )}
                               {msg.evaluation_scores.correctness && (
-                                <div className="eval-metric">
-                                  <span className="eval-label">정확성 (Correctness):</span>
-                                  <span className={`eval-score score-${msg.evaluation_scores.correctness.score}`}>
+                                <div className="mb-4 pb-3 border-b border-dark-border last:mb-0 last:pb-0 last:border-b-0">
+                                  <span className="text-[12px] font-semibold text-txt-primary mr-2">정확성 (Correctness):</span>
+                                  <span className={`text-sm font-bold py-0.5 px-2 rounded ml-2 ${SCORE_COLORS[msg.evaluation_scores.correctness.score] ?? ''}`}>
                                     {msg.evaluation_scores.correctness.score}/5
                                   </span>
-                                  <div className="eval-reasoning">{msg.evaluation_scores.correctness.reasoning}</div>
+                                  <div className="text-[11px] text-txt-secondary mt-1.5 leading-[1.4] pl-1 border-l-2 border-dark-border">{msg.evaluation_scores.correctness.reasoning}</div>
                                   {msg.evaluation_scores.correctness.rdb_verification && (
-                                    <div className="rdb-verification">
-                                      <div className="rdb-stats">
-                                        <span className="rdb-stat">
-                                          정확도: <strong>{msg.evaluation_scores.correctness.rdb_verification.accuracy_rate}%</strong>
+                                    <div className="mt-2.5 p-2.5 bg-dark-deeper rounded border border-dark-border">
+                                      <div className="flex gap-4 mb-2">
+                                        <span className="text-[11px] text-txt-secondary">
+                                          정확도: <strong className="text-accent text-[13px]">{msg.evaluation_scores.correctness.rdb_verification.accuracy_rate}%</strong>
                                         </span>
                                       </div>
                                     </div>
@@ -975,9 +984,14 @@ function App() {
               ))}
 
               {isLoading && (
-                <div className="agent-conversation assistant">
-                  <div className="assistant-response">
-                    <div className="typing-indicator">Processing request...</div>
+                <div className="flex flex-col gap-2">
+                  <div className="flex flex-col gap-2">
+                    <div className="typing-indicator">
+                      <span></span>
+                      <span></span>
+                      <span></span>
+                      Processing request...
+                    </div>
                   </div>
                 </div>
               )}
@@ -985,15 +999,15 @@ function App() {
             </div>
 
             {/* 하단 입력 영역 */}
-            <div className="agent-input-area">
-              <div className="input-wrapper">
+            <div className="border-t border-dark-border p-3 bg-dark-deeper">
+              <div className="relative bg-dark-light border border-dark-border rounded-md px-2.5 py-1.5 transition-all duration-200 flex flex-row flex-wrap items-center gap-1.5 min-h-[40px] focus-within:border-accent focus-within:shadow-[0_0_0_1px_rgba(34,209,66,0.2)]">
                 {selectedDocs.length > 0 && (
-                  <div className="selected-docs-tags">
+                  <div className="flex flex-wrap gap-1.5">
                     {selectedDocs.map(docId => (
-                      <div key={docId} className="doc-tag">
-                        <span className="doc-tag-name">{docId}</span>
+                      <div key={docId} className="flex items-center gap-1 bg-accent/10 border border-accent px-1.5 py-[1px] rounded">
+                        <span className="text-[11px] text-accent font-medium">{docId}</span>
                         <button
-                          className="doc-tag-remove"
+                          className="bg-transparent border-none text-accent cursor-pointer text-[12px] p-0 flex items-center justify-center leading-none"
                           onClick={() => removeSelectedDoc(docId)}
                         >
                           ×
@@ -1007,15 +1021,15 @@ function App() {
                   onChange={handleInputChange}
                   onKeyDown={handleKeyPress}
                   placeholder={selectedDocs.length > 0 ? "" : "Ask the Agent...And Tag with @"}
-                  className="agent-input"
+                  className="agent-input flex-1 min-w-[120px] bg-transparent border-none py-1.5 text-txt-primary text-[13px] resize-none min-h-[24px] max-h-[120px] font-[inherit] focus:outline-none placeholder:text-[#6a6a6a]"
                   rows={1}
                 />
                 {showSuggestions && (
-                  <div className="suggestion-list">
+                  <div className="absolute bottom-full left-0 w-full max-h-[200px] overflow-y-auto bg-dark-light border border-dark-border rounded shadow-[0_-4px_12px_rgba(0,0,0,0.5)] z-[1000] mb-1">
                     {suggestions.map((doc, idx) => (
                       <div
                         key={doc.id}
-                        className={`suggestion-item ${idx === suggestionIndex ? 'active' : ''}`}
+                        className={`px-3 py-2 cursor-pointer text-[13px] transition-colors duration-200 ${idx === suggestionIndex ? 'bg-dark-hover text-accent' : 'text-txt-primary hover:bg-dark-hover hover:text-accent'}`}
                         onClick={() => selectSuggestion(doc.name)}
                       >
                         {doc.name}
@@ -1024,7 +1038,7 @@ function App() {
                   </div>
                 )}
                 <button
-                  className="send-btn"
+                  className="bg-accent text-black border-none py-1.5 px-3 rounded font-semibold cursor-pointer transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed hover:enabled:bg-accent-hover"
                   onClick={sendMessage}
                   disabled={isLoading || !inputMessage.trim()}
                 >
