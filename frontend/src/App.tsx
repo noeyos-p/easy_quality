@@ -166,6 +166,40 @@ function App() {
     }
   }
 
+  const handleDownloadPDF = async () => {
+    if (!selectedDocument) return
+
+    try {
+      const url = `${API_URL}/rag/document/download/${encodeURIComponent(selectedDocument)}`
+      const response = await fetch(url)
+
+      if (response.ok) {
+        const blob = await response.blob()
+        const downloadUrl = window.URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = downloadUrl
+
+        const contentDisposition = response.headers.get('Content-Disposition')
+        let fileName = `${selectedDocument}.pdf`
+        if (contentDisposition && contentDisposition.includes('filename=')) {
+          fileName = contentDisposition.split('filename=')[1].replace(/"/g, '')
+        }
+
+        a.download = fileName
+        document.body.appendChild(a)
+        a.click()
+        window.URL.revokeObjectURL(downloadUrl)
+        document.body.removeChild(a)
+      } else {
+        const errorData = await response.json()
+        alert(`다운로드 실패: ${errorData.detail || '알 수 없는 오류'}`)
+      }
+    } catch (error) {
+      console.error('PDF 다운로드 중 오류 발생:', error)
+      alert('다운로드 중 오류가 발생했습니다.')
+    }
+  }
+
   // 문서 이름 목록 가져오기
   useEffect(() => {
     const fetchDocNames = async () => {
@@ -670,6 +704,15 @@ function App() {
             <div className="document-content">
               <div className="document-header">
                 <h2>{selectedDocument}</h2>
+                <div className="document-actions">
+                  <button
+                    className="action-btn download-btn"
+                    onClick={handleDownloadPDF}
+                    title="PDF로 다운로드"
+                  >
+                    📥 PDF
+                  </button>
+                </div>
               </div>
               <div className="document-body">
                 {isEditing ? (
