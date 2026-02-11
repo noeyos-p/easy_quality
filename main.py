@@ -12,6 +12,9 @@ RAG 챗봇 API v14.0 + Agent (OpenAI)
 from dotenv import load_dotenv
 load_dotenv()
 
+from io import BytesIO
+from fastapi.responses import Response
+
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -150,6 +153,116 @@ async def lifespan(app: FastAPI):
     if _graph_store:
         _graph_store.close()
         print(" Neo4j 연결 종료됨")
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PDF 변환 유틸리티
+# ═══════════════════════════════════════════════════════════════════════════
+
+def md_to_pdf_binary(md_text: str) -> bytes:
+    """마크다운을 PDF 바이너리로 변환 (한글 폰트 미설정 상태)"""
+    try:
+        import markdown
+        from xhtml2pdf import pisa
+        
+        # 1. Markdown -> HTML 변환 (GFM 익스텐션 등 추가 가능)
+        html_text = markdown.markdown(md_text, extensions=['extra', 'nl2br', 'sane_lists'])
+        
+        # 2. HTML -> PDF 변환
+        # 기본 스타일링 추가 (A4, 여백 등)
+        html_template = f"""
+        <html>
+        <head>
+            <meta charset="utf-8">
+            <style>
+                @page {{
+                    size: a4;
+                    margin: 2cm;
+                }}
+                body {{
+                    font-family: sans-serif;
+                    line-height: 1.5;
+                }}
+                h1, h2, h3 {{ color: #1a1a1a; }}
+                pre {{ background-color: #f4f4f4; padding: 10px; }}
+                code {{ font-family: monospace; }}
+                table {{ width: 100%; border-collapse: collapse; margin: 10px 0; }}
+                th, td {{ border: 1px solid #ccc; padding: 8px; text-align: left; }}
+            </style>
+        </head>
+        <body>
+            {html_text}
+        </body>
+        </html>
+        """
+        
+        out = BytesIO()
+        pisa_status = pisa.CreatePDF(html_template, dest=out, encoding='utf-8')
+        
+        if pisa_status.err:
+            raise Exception("PDF 생성 중 오류 발생")
+            
+        return out.getvalue()
+    except ImportError:
+        print("⚠ PDF 변환 라이브러리(xhtml2pdf, markdown)가 설치되어 있지 않습니다.")
+        raise HTTPException(500, "서버에 PDF 변환 라이브러리가 설치되어 있지 않습니다.")
+    except Exception as e:
+        print(f"⚠ PDF 변환 실패: {e}")
+        raise HTTPException(500, f"PDF 변환 중 오류가 발생했습니다: {str(e)}")
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PDF 변환 유틸리티
+# ═══════════════════════════════════════════════════════════════════════════
+
+def md_to_pdf_binary(md_text: str) -> bytes:
+    """마크다운을 PDF 바이너리로 변환 (한글 폰트 미설정 상태)"""
+    try:
+        import markdown
+        from xhtml2pdf import pisa
+        
+        # 1. Markdown -> HTML 변환 (GFM 익스텐션 등 추가 가능)
+        html_text = markdown.markdown(md_text, extensions=['extra', 'nl2br', 'sane_lists'])
+        
+        # 2. HTML -> PDF 변환
+        # 기본 스타일링 추가 (A4, 여백 등)
+        html_template = f"""
+        <html>
+        <head>
+            <meta charset="utf-8">
+            <style>
+                @page {{
+                    size: a4;
+                    margin: 2cm;
+                }}
+                body {{
+                    font-family: sans-serif;
+                    line-height: 1.5;
+                }}
+                h1, h2, h3 {{ color: #1a1a1a; }}
+                pre {{ background-color: #f4f4f4; padding: 10px; }}
+                code {{ font-family: monospace; }}
+                table {{ width: 100%; border-collapse: collapse; margin: 10px 0; }}
+                th, td {{ border: 1px solid #ccc; padding: 8px; text-align: left; }}
+            </style>
+        </head>
+        <body>
+            {html_text}
+        </body>
+        </html>
+        """
+        
+        out = BytesIO()
+        pisa_status = pisa.CreatePDF(html_template, dest=out, encoding='utf-8')
+        
+        if pisa_status.err:
+            raise Exception("PDF 생성 중 오류 발생")
+            
+        return out.getvalue()
+    except ImportError:
+        print("⚠ PDF 변환 라이브러리(xhtml2pdf, markdown)가 설치되어 있지 않습니다.")
+        raise HTTPException(500, "서버에 PDF 변환 라이브러리가 설치되어 있지 않습니다.")
+    except Exception as e:
+        print(f"⚠ PDF 변환 실패: {e}")
+        raise HTTPException(500, f"PDF 변환 중 오류가 발생했습니다: {str(e)}")
 
 app = FastAPI(title="RAG Chatbot API", version="9.2.0", lifespan=lifespan)
 
@@ -889,6 +1002,47 @@ def get_document_metadata(doc_name: str, version: Optional[str] = None):
         raise
     except Exception as e:
         raise HTTPException(500, f"메타데이터 조회 실패: {str(e)}")
+
+
+@app.get("/rag/document/download/{doc_name}")
+async def download_document(doc_name: str, version: Optional[str] = None):
+    """문서를 PDF 파일로 다운로드"""
+    try:
+        # DB에서 문서 조회 (버전 명시 없으면 최신본)
+        doc = sql_store.get_document_by_name(doc_name, version)
+        if not doc:
+            raise HTTPException(404, "문서를 찾을 수 없습니다.")
+            
+        content = doc["content"]
+        doc_type = doc["doc_type"]
+        ver = doc["version"]
+        
+        # 파일명 구성 (공백 제거)
+        safe_filename = doc_name.replace(" ", "_").replace("/", "_")
+        filename = f"{safe_filename}_v{ver}.pdf"
+        
+        # 1. 이미 PDF인 경우
+        if doc_type == "pdf" and isinstance(content, bytes):
+            return Response(
+                content=content,
+                media_type="application/pdf",
+                headers={"Content-Disposition": f"attachment; filename={filename}"}
+            )
+            
+        # 2. 텍스트(마크다운)인 경우 PDF로 변환
+        pdf_bytes = md_to_pdf_binary(content)
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(500, f"다운로드 처리 중 오류 발생: {str(e)}")
 
 
 @app.delete("/rag/document")
