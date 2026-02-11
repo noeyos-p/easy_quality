@@ -114,6 +114,49 @@ body {
 
 /* Explorer 섹션 제거됨 - Sidebar + Panels로 대체 */
 
+.side-panel {
+  width: 320px;
+  flex-shrink: 0;
+  /* 너비 고정 */
+  background: var(--bg-darker);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  transition: width 0.3s ease, opacity 0.3s ease, border-color 0.3s ease;
+}
+
+.side-panel.collapsed {
+  width: 0;
+  opacity: 0;
+  border-right-color: transparent;
+  pointer-events: none;
+}
+
+.panel-toggle-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  padding: 4px 8px;
+  font-size: 14px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.panel-toggle-btn:hover {
+  background: var(--bg-hover);
+  color: var(--accent);
+}
+
+.panel-toggle-btn.off {
+  color: var(--accent);
+  background: rgba(34, 209, 66, 0.1);
+}
+
 /* ═══════════════════════════════════════════════════════════════════════════
    가운데: 문서 뷰어
    ═══════════════════════════════════════════════════════════════════════════ */
@@ -124,6 +167,7 @@ body {
   overflow-y: auto;
   display: flex;
   flex-direction: column;
+  transition: all 0.3s ease;
 }
 
 .empty-state {
@@ -271,11 +315,21 @@ body {
 
 .agent-panel {
   width: 420px;
+  flex-shrink: 0;
+  /* 너비 고정 */
   background: var(--bg-darker);
   border-left: 1px solid var(--border);
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  transition: width 0.3s ease, opacity 0.3s ease, border-color 0.3s ease;
+}
+
+.agent-panel.collapsed {
+  width: 0;
+  opacity: 0;
+  border-left-color: transparent;
+  pointer-events: none;
 }
 
 .agent-header {
