@@ -63,6 +63,8 @@ function App() {
   const [documentContent, setDocumentContent] = useState<string | null>(null)
   const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set())
   const [activePanel, setActivePanel] = useState<'documents' | 'visualization' | null>(null)
+  const [isLeftVisible, setIsLeftVisible] = useState(true)
+  const [isRightVisible, setIsRightVisible] = useState(true)
 
   // @멘션 상태
   const [docNames, setDocNames] = useState<{ id: number; name: string }[]>([])
@@ -379,32 +381,59 @@ function App() {
     }
   }
 
+
   // ─────────────────────────────────────────────────────────────
   // 렌더링
   // ─────────────────────────────────────────────────────────────
 
   return (
-    <div className="app">
+    <div className={`app ${!isLeftVisible ? 'left-collapsed' : ''} ${!isRightVisible ? 'right-collapsed' : ''}`}>
       {/* 헤더 */}
       <header className="header">
         <div className="header-left">
+          <button
+            className={`panel-toggle-btn ${!isLeftVisible ? 'off' : ''}`}
+            onClick={() => setIsLeftVisible(!isLeftVisible)}
+            title={isLeftVisible ? "사이드바 접기" : "사이드바 펴기"}
+          >
+            {isLeftVisible ? '◀' : '▶'}
+          </button>
           <span className="project-name">Orchestrator Agent</span>
         </div>
         <div className="header-right">
           <span className={`status-indicator ${isConnected ? 'connected' : 'disconnected'}`}>
             {isConnected ? '[OK]' : '[ERROR]'} {agentStatus}
           </span>
+          <button
+            className={`panel-toggle-btn ${!isRightVisible ? 'off' : ''}`}
+            onClick={() => setIsRightVisible(!isRightVisible)}
+            title={isRightVisible ? "채팅 패널 접기" : "채팅 패널 펴기"}
+          >
+            {isRightVisible ? '▶' : '◀'}
+          </button>
         </div>
       </header>
 
       <div className="main-container">
         {/* 왼쪽: 사이드바 아이콘 */}
-        <Sidebar activePanel={activePanel} onPanelChange={setActivePanel} />
+        <Sidebar activePanel={activePanel} onPanelChange={(panel) => {
+          setActivePanel(panel);
+          if (panel) setIsLeftVisible(true);
+        }} />
 
         {/* 문서 관리 패널 */}
-        {activePanel === 'documents' && (
-          <DocumentManagementPanel onDocumentSelect={handleDocumentSelect} />
-        )}
+        <div className={`side-panel left ${!isLeftVisible || !activePanel ? 'collapsed' : ''}`}>
+          {activePanel === 'documents' && (
+            <DocumentManagementPanel onDocumentSelect={handleDocumentSelect} />
+          )}
+          {activePanel === 'visualization' && (
+            <div className="document-visualization-panel">
+              {/* 사실 visualization은 전체 화면 모드라 별도 패널이 필요 없거나 축소될 수 있음 */}
+              <div className="panel-header"><h2>시각화 설정</h2></div>
+              <div className="panel-content"><p>시각화 속성 설정 패널이 위치할 수 있습니다.</p></div>
+            </div>
+          )}
+        </div>
 
         {/* 가운데: 문서 뷰어 또는 그래프 시각화 */}
         <main className="document-viewer">
@@ -583,7 +612,7 @@ function App() {
         </main>
 
         {/* 오른쪽: Agent 패널 */}
-        <aside className="agent-panel">
+        <aside className={`agent-panel ${!isRightVisible ? 'collapsed' : ''}`}>
           <div className="agent-header">
             <span className="agent-title">Agent Chat</span>
           </div>
