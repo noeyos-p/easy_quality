@@ -4,12 +4,24 @@ import remarkGfm from 'remark-gfm'
 import MermaidRenderer from './components/MermaidRenderer'
 import Sidebar from './components/Sidebar'
 import DocumentManagementPanel from './components/DocumentManagementPanel'
-import DocumentVisualizationPanel from './components/DocumentVisualizationPanel'
+import ForceGraph2D from 'react-force-graph-2d'
 import './App.css'
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 타입 정의
 // ═══════════════════════════════════════════════════════════════════════════
+
+interface DocumentMetadata {
+  doc_id?: string
+  sop_id?: string
+  title?: string
+  version?: string
+  effective_date?: string
+  owning_dept?: string
+  total_chunks?: number
+  quality_score?: number
+  conversion_method?: string
+}
 
 interface RDBVerification {
   has_citations: boolean
@@ -71,6 +83,14 @@ function App() {
   const [suggestionIndex, setSuggestionIndex] = useState(0)
   const [mentionTriggerPos, setMentionTriggerPos] = useState<number | null>(null)
   const [selectedDocs, setSelectedDocs] = useState<string[]>([])
+  // 그래프 시각화 상태
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const [graphData, setGraphData] = useState<{ nodes: any[], links: any[] } | null>(null)
+  const [isLoadingGraph, setIsLoadingGraph] = useState(false)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const fgRef = useRef<any>(null)
+  const [graphSize, setGraphSize] = useState({ width: 0, height: 0 })
+  const graphContainerRef = useRef<HTMLDivElement>(null)
 
   // 파일 트리 상태 제거 (문서 관리 패널로 이동됨)
 
@@ -88,7 +108,7 @@ function App() {
           setIsConnected(false)
           setAgentStatus('Connection Failed')
         }
-      } catch (error) {
+      } catch (_error) {
         setIsConnected(false)
         setAgentStatus('Server Offline')
       }
@@ -116,6 +136,69 @@ function App() {
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
+
+  // 그래프 데이터 로드
+  useEffect(() => {
+    if (activePanel === 'visualization') {
+      fetchGraphData()
+    }
+  }, [activePanel])
+
+  // 그래프 컨테이너 크기 측정
+  useEffect(() => {
+    const updateSize = () => {
+      if (graphContainerRef.current) {
+        const { offsetWidth, offsetHeight } = graphContainerRef.current
+        setGraphSize({ width: offsetWidth, height: offsetHeight })
+      }
+    }
+    updateSize()
+    window.addEventListener('resize', updateSize)
+    return () => window.removeEventListener('resize', updateSize)
+  }, [activePanel])
+
+  const fetchGraphData = async () => {
+    setIsLoadingGraph(true)
+    try {
+      const response = await fetch(`${API_URL}/graph/visualization/all`)
+      const data = await response.json()
+      console.log('📊 [Graph Data]', data)
+
+      if (data.success) {
+        // 노드를 원형으로 배치하고 위치 고정
+        const nodeCount = data.nodes.length
+        const radius = Math.min(120, nodeCount * 12) // 화면에 맞게 반지름 더욱 줄임
+
+        const nodesWithPosition = data.nodes.map((node: any, i: number) => {
+          const angle = (i / nodeCount) * 2 * Math.PI
+          const x = Math.cos(angle) * radius
+          const y = Math.sin(angle) * radius - 40  // 위로 40px 이동 (가운데 정렬)
+
+          return {
+            id: node.id,
+            name: node.id,
+            title: node.title,
+            version: node.version,
+            doc_type: node.doc_type,
+            type_name: node.type_name,
+            x: x,
+            y: y,
+            fx: x,  // fixed x position
+            fy: y   // fixed y position
+          }
+        })
+
+        setGraphData({
+          nodes: nodesWithPosition,
+          links: data.links
+        })
+      }
+    } catch (error) {
+      console.error('그래프 데이터 로드 실패:', error)
+    } finally {
+      setIsLoadingGraph(false)
+    }
+  }
 
   // ─────────────────────────────────────────────────────────────
   // API 호출
@@ -302,7 +385,7 @@ function App() {
         } else {
           setDocumentContent('내용을 불러올 수 없습니다.')
         }
-      } catch (error) {
+      } catch (_error) {
         setDocumentContent('문서 내용을 가져오는 중 오류가 발생했습니다.')
       }
     }
@@ -335,12 +418,108 @@ function App() {
           <DocumentManagementPanel onDocumentSelect={handleDocumentSelect} />
         )}
 
-        {/* 문서 시각화 패널 */}
-        {activePanel === 'visualization' && <DocumentVisualizationPanel />}
-
-        {/* 가운데: 문서 뷰어 */}
+        {/* 가운데: 문서 뷰어 또는 그래프 시각화 */}
         <main className="document-viewer">
-          {selectedDocument && documentContent ? (
+          {activePanel === 'visualization' ? (
+            // 전체 문서 그래프 시각화
+            <div className="graph-visualization">
+              <div className="graph-header">
+                <div className="graph-header-left">
+                  <h2>전체 문서 관계 그래프</h2>
+                  <div className="graph-legend">
+                    <span className="legend-item">
+                      <span className="legend-color sop"></span>
+                      SOP (표준운영절차서)
+                    </span>
+                    <span className="legend-item">
+                      <span className="legend-color wi"></span>
+                      WI (작업지침서)
+                    </span>
+                    <span className="legend-item">
+                      <span className="legend-color frm"></span>
+                      FRM (양식)
+                    </span>
+                  </div>
+                </div>
+                <div className="graph-header-right">
+                  {graphData && (
+                    <span className="graph-stats">
+                      문서: {graphData.nodes.length}개 | 연결: {graphData.links.length}개
+                    </span>
+                  )}
+                  <button
+                    className="btn-center-graph"
+                    onClick={() => fgRef.current?.zoomToFit(400, 80)}
+                    title="중앙으로"
+                  >
+                    중앙으로
+                  </button>
+                </div>
+              </div>
+              <div className="graph-container" ref={graphContainerRef}>
+                {isLoadingGraph ? (
+                  <div className="loading-state">데이터를 불러오는 중...</div>
+                ) : graphData && graphData.nodes.length > 0 ? (
+                  <ForceGraph2D
+                    ref={fgRef}
+                    graphData={graphData}
+                    nodeLabel={(node: any) => `${node.id}\n${node.title || ''}`}
+                    nodeRelSize={25}
+                    onNodeClick={(node: any) => {
+                      // 문서 관리 패널로 전환
+                      setActivePanel('documents')
+                      // 해당 문서 내용 표시
+                      handleDocumentSelect(node.id)
+                    }}
+                    nodeCanvasObject={(node: any, ctx, globalScale) => {
+                      const label = node.id
+                      const fontSize = 11 / globalScale
+                      ctx.font = `${fontSize}px Sans-Serif`
+
+                      // 노드 색상 (파스텔 톤)
+                      let color = '#A5D8FF'  // 기타 (파스텔 블루)
+                      if (node.doc_type === 'SOP') color = '#A8E6CF'  // 파스텔 그린
+                      else if (node.doc_type === 'WI') color = '#FFD3A5'  // 파스텔 오렌지
+                      else if (node.doc_type === 'FRM') color = '#FFB3BA'  // 파스텔 핑크
+
+                      // 원형 노드
+                      const radius = 25 / globalScale
+                      ctx.beginPath()
+                      ctx.arc(node.x!, node.y!, radius, 0, 2 * Math.PI)
+                      ctx.fillStyle = color
+                      ctx.fill()
+                      ctx.strokeStyle = '#555'
+                      ctx.lineWidth = 2 / globalScale
+                      ctx.stroke()
+
+                      // 레이블 (원 밖 아래에 하얀색으로)
+                      ctx.fillStyle = '#cccccc'
+                      ctx.textAlign = 'center'
+                      ctx.textBaseline = 'top'
+                      ctx.fillText(label, node.x!, node.y! + radius + 5)
+                    }}
+                    linkColor={() => '#3e3e42'}                                                       
+                    linkWidth={1} 
+                    backgroundColor="#1F1F1F"
+                    width={graphSize.width || 600}
+                    height={graphSize.height || 500}
+                    enableNodeDrag={false}
+                    enableZoomInteraction={true}
+                    enablePanInteraction={false}
+                    cooldownTicks={0}
+                    minZoom={0.3}
+                    maxZoom={5}
+                    onEngineStop={() => fgRef.current?.zoomToFit(400, 80)}
+                  />
+                ) : (
+                  <div className="empty-state">
+                    <p>그래프 데이터가 없습니다.</p>
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : selectedDocument && documentContent ? (
+            // 문서 내용 표시
             <div className="document-content">
               <div className="document-header">
                 <h2>{selectedDocument}</h2>
@@ -350,6 +529,7 @@ function App() {
               </div>
             </div>
           ) : (
+            // 빈 상태
             <div className="empty-state">
               <div className="empty-icon">[FILE]</div>
               <h2>Select a document</h2>

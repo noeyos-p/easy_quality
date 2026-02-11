@@ -629,6 +629,21 @@ def generate_llm(request: LLMRequest):
 # API 엔드포인트 - 문서 관리
 # ═══════════════════════════════════════════════════════════════════════════
 
+def extract_document_category(doc_id: str) -> str:
+    """문서 ID에서 카테고리 추출 (SOP, WI, FRM)"""
+    if not doc_id:
+        return "기타"
+    doc_id_upper = doc_id.upper()
+    if "SOP" in doc_id_upper:
+        return "SOP"
+    elif "WI" in doc_id_upper:
+        return "WI"
+    elif "FRM" in doc_id_upper or "FORM" in doc_id_upper:
+        return "FRM"
+    else:
+        return "기타"
+
+
 @app.get("/rag/documents")
 def list_documents(collection: str = "documents"):
     """문서 목록 (RDB에서 조회)"""
@@ -646,6 +661,7 @@ def list_documents(collection: str = "documents"):
                     "doc_id": doc_name,
                     "doc_name": doc_name,
                     "doc_type": doc.get('doc_type'),
+                    "doc_category": extract_document_category(doc_name),  # 문서 분류 추가
                     "version": doc.get('version'),
                     "created_at": doc.get('created_at'),
                     "latest_version": doc.get('version')
@@ -975,6 +991,24 @@ def graph_search_terms(term: str):
         return {"term": term, "results": results, "count": len(results)}
     except Exception as e:
         raise HTTPException(500, f"용어 검색 실패: {str(e)}")
+
+
+@app.get("/graph/visualization/all")
+def graph_get_full_visualization():
+    """전체 문서 그래프 시각화 데이터 (모든 문서 + 관계)"""
+    try:
+        graph = get_graph_store()
+        full_graph = graph.get_full_graph()
+
+        return {
+            "success": True,
+            "nodes": full_graph["nodes"],
+            "links": full_graph["links"],
+            "node_count": len(full_graph["nodes"]),
+            "link_count": len(full_graph["links"])
+        }
+    except Exception as e:
+        raise HTTPException(500, f"그래프 조회 실패: {str(e)}")
 
 
 @app.get("/graph/visualization/{doc_id}")

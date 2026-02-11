@@ -1175,3 +1175,110 @@ body {
   border: none;
   margin: 0;
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   그래프 시각화
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.graph-visualization {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+.graph-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 24px;
+  background: var(--bg-darker);
+  border-bottom: 1px solid var(--border);
+}
+
+.graph-header-left {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.graph-header h2 {
+  font-size: 16px;
+  font-weight: 500;
+  margin: 0;
+  color: var(--text-primary);
+}
+
+.graph-legend {
+  display: flex;
+  gap: 16px;
+  font-size: 12px;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-secondary);
+}
+
+.legend-color {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 1px solid #333;
+}
+
+.legend-color.sop {
+  background: #A8E6CF !important;
+}
+
+.legend-color.wi {
+  background: #FFD3A5 !important;
+}
+
+.legend-color.frm {
+  background: #FFB3BA !important;
+}
+
+.graph-header-right {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.graph-stats {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.btn-center-graph {
+  padding: 6px 12px;
+  background: var(--bg-lighter);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.btn-center-graph:hover {
+  background: var(--bg-hover);
+  border-color: var(--accent);
+}
+
+.graph-container {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+}
+
+.loading-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--text-secondary);
+  font-size: 14px;
+}

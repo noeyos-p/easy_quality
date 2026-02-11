@@ -73,6 +73,48 @@
   text-align: center;
 }
 
+/* 문서 그룹 (폴더) */
+.document-group {
+  margin-bottom: 4px;
+}
+
+.folder-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: background-color 0.2s;
+  user-select: none;
+}
+
+.folder-header:hover {
+  background-color: #2a2d2e;
+}
+
+.folder-icon {
+  font-size: 14px;
+}
+
+.folder-name {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 600;
+  color: #cccccc;
+}
+
+.folder-count {
+  font-size: 11px;
+  color: #858585;
+}
+
+.folder-content {
+  margin-left: 20px;
+  border-left: 1px solid #3e3e3e;
+  padding-left: 4px;
+}
+
 .document-item {
   display: flex;
   justify-content: space-between;
@@ -94,10 +136,15 @@
 .document-info {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   color: #cccccc;
-  font-size: 13px;
+  font-size: 12px;
   flex: 1;
+}
+
+.doc-icon {
+  font-size: 12px;
+  opacity: 0.7;
 }
 
 .doc-chunk-count {
