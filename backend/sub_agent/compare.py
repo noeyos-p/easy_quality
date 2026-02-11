@@ -61,8 +61,17 @@ def comparison_agent_node(state: AgentState):
         # [CASE 1] 버전 목록 조회
         if intent == "list_history":
             print(f"[DEBUG] list_history 분기 실행")
-            history = get_version_history_tool.invoke({"doc_id": doc_id})
-            return {"context": [f"### [{doc_id} 버전 이력]\n{history} [DONE]"]}
+            store = SQLStore()
+            versions = store.get_document_versions(doc_id)
+            if not versions:
+                history = f"{doc_id} 문서의 버전을 찾을 수 없습니다."
+            else:
+                history = "\n".join([f"- v{v['version']} ({v['created_at']})" for v in versions])
+
+            # [USE: ...] 태그 추가 (참고문서에 포함되도록)
+            use_tag = f"[USE: {doc_id} | 버전 이력]"
+
+            return {"context": [f"### [{doc_id} 버전 이력]\n{history}\n\n{use_tag} [DONE]"]}
 
         # [CASE 2] 버전 비교
         elif intent == "compare_versions":
@@ -132,6 +141,7 @@ def comparison_agent_node(state: AgentState):
                  comp_data = "데이터 비교 중 조항 정보를 가져오지 못했습니다."
             
             # [Hybrid] 영향 분석 조회 (Neo4j Store 직접 호출)
+            graph_store = None
             try:
                 graph_store = Neo4jGraphStore()
                 graph_store.connect()
@@ -143,6 +153,12 @@ def comparison_agent_node(state: AgentState):
             except Exception as e:
                 print(f"[DEBUG compare.py] Graph 직접 조회 실패: {e}")
                 impact_data = "영향 분석 데이터를 가져오는 중 오류가 발생했습니다."
+            finally:
+                if graph_store:
+                    try:
+                        graph_store.close()
+                    except:
+                        pass
 
             if not diffs: 
                  return {"context": [f"### [비교 에이전트 오류]\n{doc_id}의 지정된 버전({v1}, {v2}) 데이터를 가져올 수 없습니다. [DONE]"]}
@@ -188,7 +204,43 @@ def comparison_agent_node(state: AgentState):
                 res = llm.invoke([{"role": "user", "content": analysis_prompt}])
 
                 final_report = res.content
-                return {"context": [final_report + " [DONE]"]}
+
+                # [USE: ...] 태그 생성 (참고문서에 포함되도록)
+                use_tags = []
+
+                # 메인 문서 (버전 정보 포함)
+                use_tags.append(f"[USE: {doc_id} | v{v1} vs v{v2}]")
+
+                # 변경된 조항들
+                modified_count = 0
+                for item in diffs:
+                    if item.get('change_type') == 'MODIFIED':
+                        clause_id = item.get('clause', 'N/A')
+                        print(f"[DEBUG compare.py] 변경된 조항: {clause_id}")
+                        if clause_id and clause_id != 'N/A':
+                            use_tags.append(f"[USE: {doc_id} | {clause_id}]")
+                            modified_count += 1
+
+                print(f"[DEBUG compare.py] 총 {modified_count}개 조항 태그 생성")
+
+                # 영향 받는 문서들 (있다면)
+                if impacts and isinstance(impacts, list):
+                    print(f"[DEBUG compare.py] 영향 문서 개수: {len(impacts)}")
+                    for impact in impacts:
+                        if isinstance(impact, dict):
+                            impact_doc = impact.get('source_doc_id') or impact.get('doc_id')
+                            impact_section = impact.get('citing_section', '')
+                            if impact_doc:
+                                if impact_section:
+                                    use_tags.append(f"[USE: {impact_doc} | {impact_section}]")
+                                else:
+                                    use_tags.append(f"[USE: {impact_doc} | 영향 문서]")
+
+                # USE 태그를 보고서에 추가 (hidden)
+                use_tags_str = " ".join(use_tags)
+                print(f"[DEBUG compare.py] 생성된 USE 태그: {use_tags_str[:200]}...")
+
+                return {"context": [final_report + f"\n\n{use_tags_str} [DONE]"]}
             except Exception as e:
                 return {"context": [f"### [비교 보고서 생성 실패]\nLLM 호출 중 오류가 발생했습니다: {e} [DONE]"]}
 

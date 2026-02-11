@@ -25,12 +25,18 @@ def generate_mermaid_flow(doc_id: str, refs: dict, impact_data: list = None) -> 
     
     # 1. 문서 간 참조 (References/Cited By)
     for ref in refs.get("references", []):
-        ref_id = ref.replace("-", "_")
-        lines.append(f'    Main --> {ref_id}["{ref}"]')
-        
+        # ref가 dict인 경우 doc_id 추출
+        ref_doc = ref.get("doc_id") if isinstance(ref, dict) else ref
+        if ref_doc:
+            ref_id = ref_doc.replace("-", "_")
+            lines.append(f'    Main --> {ref_id}["{ref_doc}"]')
+
     for cited in refs.get("cited_by", []):
-        cited_id = cited.replace("-", "_")
-        lines.append(f'    {cited_id}["{cited}"] --> Main')
+        # cited가 dict인 경우 doc_id 추출
+        cited_doc = cited.get("doc_id") if isinstance(cited, dict) else cited
+        if cited_doc:
+            cited_id = cited_doc.replace("-", "_")
+            lines.append(f'    {cited_id}["{cited_doc}"] --> Main')
 
     # 2. 영향 분석 데이터가 있는 경우 추가 (정밀 관계)
     if impact_data:
@@ -89,17 +95,38 @@ def graph_agent_node(state: AgentState):
 
     # 2. 데이터 조회
     refs_str = get_references_tool.invoke({"doc_id": doc_id})
-    ref_data = safe_json_loads(refs_str) or {"document": {"doc_id": doc_id}, "references": [], "cited_by": []}
-    
+    print(f"[DEBUG graph.py] refs_str: {refs_str[:200] if refs_str else 'None'}...")
+    ref_data = safe_json_loads(refs_str) or {"document": {"doc_id": doc_id}, "references_to": [], "referenced_by": []}
+    print(f"[DEBUG graph.py] ref_data keys: {ref_data.keys()}")
+
+    # 키 이름 정규화 (references_to -> references, referenced_by -> cited_by)
+    if "references_to" in ref_data:
+        ref_data["references"] = ref_data["references_to"]
+    if "referenced_by" in ref_data:
+        ref_data["cited_by"] = ref_data["referenced_by"]
+
+    print(f"[DEBUG graph.py] references: {ref_data.get('references', [])}")
+    print(f"[DEBUG graph.py] cited_by: {ref_data.get('cited_by', [])}")
+
+    # Neo4j 연결 (조항 정보 조회를 위해 항상 필요)
+    graph_store = None
     impact_list = []
-    if intent == "impact_analysis" or "영향" in query:
-        try:
-            graph_store = Neo4jGraphStore()
-            graph_store.connect()
+
+    print(f"[DEBUG graph.py] Neo4j 연결 시도 (intent={intent}, query={query})")
+    try:
+        graph_store = Neo4jGraphStore()
+        graph_store.connect()
+
+        # 영향 분석 (특정 조건에서만)
+        if intent == "impact_analysis" or "영향" in query or "참조" in query or "관계" in query:
+            print(f"[DEBUG graph.py] 영향 분석 실행")
             impact_list = graph_store.get_impact_analysis(doc_id)
-        except Exception as e:
-            print(f"[DEBUG graph.py] Graph 직접 조회 실패: {e}")
-            impact_list = []
+            print(f"[DEBUG graph.py] impact_list 조회 성공: {len(impact_list)}개")
+
+    except Exception as e:
+        print(f"[DEBUG graph.py] Neo4j 연결 실패: {e}")
+        impact_list = []
+        # 실패해도 계속 진행 (조항 정보 없이)
 
     # 3. 시각화 (Mermaid) 생성
     mermaid_code = generate_mermaid_flow(doc_id, ref_data, impact_list)
@@ -133,7 +160,93 @@ def graph_agent_node(state: AgentState):
     # LangChain ChatOpenAI 사용
     llm = get_langchain_llm(model=model, temperature=0.0)
     analysis_res = llm.invoke([{"role": "user", "content": analysis_prompt}])
+
+    # Mermaid 다이어그램 추가 및 결과 조합
     llm_analysis = analysis_res.content.strip()
+
+    # [USE: ...] 태그 생성 (참고문서에 포함되도록)
+    use_tags = []
+
+    # 메인 문서
+    use_tags.append(f"[USE: {doc_id} | 문서 관계]")
+
+    # 참조하는 문서들 (상위 문서) - 조항 정보 포함
+    for ref_item in ref_data.get("references", []):
+        # ref_item이 dict인 경우 doc_id 추출
+        ref_doc = ref_item.get("doc_id") if isinstance(ref_item, dict) else ref_item
+        if ref_doc:
+            # 어느 조항에서 참조하는지 Neo4j에서 조회
+            try:
+                if graph_store and graph_store.driver:
+                    with graph_store.driver.session(database=graph_store.database) as session:
+                        result = session.run("""
+                            MATCH (source:Document {doc_id: $source_id})-[:HAS_SECTION]->(section:Section)-[:MENTIONS]->(target:Document {doc_id: $target_id})
+                            RETURN section.section_id as section_id
+                            LIMIT 5
+                        """, source_id=doc_id, target_id=ref_doc)
+
+                        sections = [record["section_id"].split(":")[-1] if ":" in record["section_id"] else record["section_id"]
+                                   for record in result]
+
+                        if sections:
+                            for section in sections:
+                                use_tags.append(f"[USE: {doc_id} | {section}]")
+                                print(f"[DEBUG graph.py] 상위 참조 태그 추가: {doc_id} > {section} (참조대상: {ref_doc})")
+                        else:
+                            use_tags.append(f"[USE: {ref_doc} | 상위 참조]")
+                            print(f"[DEBUG graph.py] 상위 참조 태그 추가 (조항 정보 없음): {ref_doc}")
+                else:
+                    use_tags.append(f"[USE: {ref_doc} | 상위 참조]")
+            except Exception as e:
+                print(f"[DEBUG graph.py] 조항 정보 조회 실패: {e}")
+                use_tags.append(f"[USE: {ref_doc} | 상위 참조]")
+
+    # 참조받는 문서들 (하위 문서) - 조항 정보 포함
+    for cited_item in ref_data.get("cited_by", []):
+        # cited_item이 dict인 경우 doc_id 추출
+        cited_doc = cited_item.get("doc_id") if isinstance(cited_item, dict) else cited_item
+        if cited_doc:
+            # 어느 조항에서 참조하는지 Neo4j에서 조회
+            try:
+                if graph_store and graph_store.driver:
+                    with graph_store.driver.session(database=graph_store.database) as session:
+                        result = session.run("""
+                            MATCH (source:Document {doc_id: $source_id})-[:HAS_SECTION]->(section:Section)-[:MENTIONS]->(target:Document {doc_id: $target_id})
+                            RETURN section.section_id as section_id
+                            LIMIT 5
+                        """, source_id=cited_doc, target_id=doc_id)
+
+                        sections = [record["section_id"].split(":")[-1] if ":" in record["section_id"] else record["section_id"]
+                                   for record in result]
+
+                        if sections:
+                            for section in sections:
+                                use_tags.append(f"[USE: {cited_doc} | {section}]")
+                                print(f"[DEBUG graph.py] 하위 참조 태그 추가: {cited_doc} > {section}")
+                        else:
+                            use_tags.append(f"[USE: {cited_doc} | 하위 참조]")
+                            print(f"[DEBUG graph.py] 하위 참조 태그 추가 (조항 정보 없음): {cited_doc}")
+                else:
+                    use_tags.append(f"[USE: {cited_doc} | 하위 참조]")
+            except Exception as e:
+                print(f"[DEBUG graph.py] 조항 정보 조회 실패: {e}")
+                use_tags.append(f"[USE: {cited_doc} | 하위 참조]")
+
+    # 영향 분석 데이터 (조항 정보 포함)
+    if impact_list:
+        print(f"[DEBUG graph.py] impact_list 개수: {len(impact_list)}")
+        for imp in impact_list:
+            src_doc = imp.get("source_doc_id")
+            section = imp.get("citing_section", "")
+            print(f"[DEBUG graph.py] 영향 문서: {src_doc}, 조항: {section}")
+            if src_doc:
+                if section:
+                    use_tags.append(f"[USE: {src_doc} | {section}]")
+                else:
+                    use_tags.append(f"[USE: {src_doc} | 영향 조항]")
+
+    # USE 태그를 보고서에 추가 (hidden)
+    use_tags_str = " ".join(use_tags)
     final_report = f"""### [그래프 에이전트 관계 분석 보고]
 
 {llm_analysis}
@@ -143,6 +256,14 @@ def graph_agent_node(state: AgentState):
 {mermaid_code}
 ```
 
+{use_tags_str}
 [DONE]"""
+
+    # Neo4j 연결 종료
+    if graph_store:
+        try:
+            graph_store.close()
+        except:
+            pass
 
     return {"context": [final_report]}
