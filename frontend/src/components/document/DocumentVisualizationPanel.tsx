@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import MermaidRenderer from './MermaidRenderer';
+import MermaidRenderer from '../graph/MermaidRenderer';
 
 const API_URL = 'http://localhost:8000';
 
