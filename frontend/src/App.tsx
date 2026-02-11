@@ -4,6 +4,7 @@ import remarkGfm from 'remark-gfm'
 import MermaidRenderer from './components/MermaidRenderer'
 import Sidebar from './components/Sidebar'
 import DocumentManagementPanel from './components/DocumentManagementPanel'
+import ChangeHistoryPanel from './components/ChangeHistoryPanel'
 import ForceGraph2D from 'react-force-graph-2d'
 
 const SCORE_COLORS: Record<number, string> = {
@@ -70,7 +71,7 @@ function App() {
   const [selectedDocument, setSelectedDocument] = useState<string | null>(null)
   const [documentContent, setDocumentContent] = useState<string | null>(null)
   const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set())
-  const [activePanel, setActivePanel] = useState<'documents' | 'visualization' | null>(null)
+  const [activePanel, setActivePanel] = useState<'documents' | 'visualization' | 'history' | null>(null)
   const [isLeftVisible, setIsLeftVisible] = useState(true)
   const [isRightVisible, setIsRightVisible] = useState(true)
   const [isEditing, setIsEditing] = useState(false)
@@ -577,10 +578,13 @@ function App() {
           if (panel) setIsLeftVisible(true);
         }} />
 
-        {/* 문서 관리 패널 (visualization 모드엔 표시 안 함) */}
+        {/* 사이드 패널 (visualization 모드엔 표시 안 함) */}
         <div className={`flex-shrink-0 bg-dark-deeper border-r border-dark-border flex flex-col overflow-hidden transition-[width,opacity,border-color] duration-300 ease-in-out ${!isLeftVisible || !activePanel || activePanel === 'visualization' ? 'w-0 opacity-0 border-r-transparent pointer-events-none' : 'w-80'}`}>
           {activePanel === 'documents' && (
             <DocumentManagementPanel onDocumentSelect={handleDocumentSelect} />
+          )}
+          {activePanel === 'history' && (
+            <ChangeHistoryPanel />
           )}
         </div>
 
@@ -743,7 +747,7 @@ function App() {
                   )}
                 </div>
               </div>
-              <div className="py-10 px-5 bg-[#e0e0e0] flex flex-col items-center gap-[30px]">
+              <div className="pt-0 pb-10 px-5 bg-[#c8c8c8] flex flex-col items-center gap-[30px]">
                 {isEditing ? (
                   <div className="w-full max-w-[1100px] h-[calc(100vh-120px)] bg-dark-deeper border border-dark-border rounded overflow-hidden shadow-[0_10px_30px_rgba(0,0,0,0.3)]">
                     <textarea
@@ -867,14 +871,14 @@ function App() {
                         // 최상위 조항 - 볼드, 간격 증가
                         if (globalDepth === 0) {
                           elements.push(
-                            <div key={`section-${lineIdx}`} className="text-[16px] font-bold mt-[60px] mb-[8px] text-[#1a1a1a] border-b border-[#e9ecef] pb-[10px]" style={sectionStyle}>
+                            <div key={`section-${lineIdx}`} className="text-[16px] font-bold mt-[60px] mb-[8px] text-black border-b border-[#e0e0e0] pb-[10px]" style={sectionStyle}>
                               {displayText}
                             </div>
                           );
                         } else {
                           // 하위 조항, 간격 증가
                           elements.push(
-                            <div key={`section-${lineIdx}`} className="text-[15px] font-normal mt-[28px] mb-[8px] text-[#2c3e50]" style={sectionStyle}>
+                            <div key={`section-${lineIdx}`} className="text-[15px] font-normal mt-[28px] mb-[8px] text-black" style={sectionStyle}>
                               {displayText}
                             </div>
                           );
@@ -927,9 +931,9 @@ function App() {
                     flushParagraph(lines.length);
 
                     return (
-                      <div className="w-full max-w-[1100px]">
-                        <div className="bg-white text-[#333] py-[60px] px-[80px] shadow-[0_10px_30px_rgba(0,0,0,0.15)] rounded">
-                          <div className="break-words text-[#2c3e50]">
+                      <div style={{ width: '794px' }}>
+                        <div className="bg-white" style={{ minHeight: '1123px', padding: '96px 90px' }}>
+                          <div className="break-words text-black">
                             {elements}
                           </div>
                         </div>
