@@ -1,0 +1,253 @@
+import React from 'react'
+import { API_URL } from '../../types'
+
+interface DocumentViewerProps {
+  selectedDocument: string
+  documentContent: string
+  isEditing: boolean
+  editedContent: string
+  setEditedContent: (v: string) => void
+}
+
+export default function DocumentViewer({
+  selectedDocument,
+  documentContent,
+  isEditing,
+  editedContent,
+  setEditedContent,
+}: DocumentViewerProps) {
+  const [isDownloadOpen, setIsDownloadOpen] = React.useState(false)
+
+  const handleDownload = async (format: 'pdf' | 'docx' | 'md') => {
+    try {
+      const url = `${API_URL}/rag/document/download/${encodeURIComponent(selectedDocument)}?format=${format}`
+      const response = await fetch(url)
+
+      if (response.ok) {
+        const blob = await response.blob()
+        const downloadUrl = window.URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = downloadUrl
+
+        const contentDisposition = response.headers.get('Content-Disposition')
+        let fileName = `${selectedDocument}.${format}`
+        if (contentDisposition && contentDisposition.includes('filename=')) {
+          fileName = contentDisposition.split('filename=')[1].replace(/"/g, '')
+        }
+
+        a.download = fileName
+        document.body.appendChild(a)
+        a.click()
+        window.URL.revokeObjectURL(downloadUrl)
+        document.body.removeChild(a)
+        setIsDownloadOpen(false)
+      } else {
+        const errorData = await response.json()
+        alert(`다운로드 실패: ${errorData.detail || '알 수 없는 오류'}`)
+      }
+    } catch (error) {
+      console.error(`${format} 다운로드 중 오류 발생:`, error)
+      alert('다운로드 중 오류가 발생했습니다.')
+    }
+  }
+
+  const renderDocument = () => {
+    const lines = documentContent
+      .replace(/<!-- PAGE:\d+ -->/g, '')
+      .split('\n')
+
+    let globalDepth = 0
+    let globalLastWasSection = false
+    const indentIncrement = 12
+    const elements: React.ReactElement[] = []
+    let paragraphLines: string[] = []
+    let paragraphStartIdx = 0
+    let firstHeaderBlockPassed = false
+    let inHeaderBlock = false
+    let endOfDocumentReached = false
+
+    const flushParagraph = (endIdx: number) => {
+      if (paragraphLines.length > 0) {
+        const paragraphText = paragraphLines.join(' ')
+        const totalPadding = globalDepth * indentIncrement
+
+        elements.push(
+          <p key={`para-${paragraphStartIdx}`} className="text-[15px] leading-[1.8] mb-[6px]" style={{ paddingLeft: `${totalPadding}px` }}>
+            {paragraphText}
+          </p>
+        )
+        paragraphLines = []
+      }
+    }
+
+    lines.forEach((line, lineIdx) => {
+      const trimmedLine = line.trim()
+
+      if (/^\*\*\*END OF DOCUMENT\*\*\*/.test(trimmedLine)) {
+        endOfDocumentReached = true
+        return
+      }
+      if (endOfDocumentReached) return
+      if (trimmedLine === '') return
+
+      const sectionMatch = trimmedLine.match(/^(\d+(?:\.\d+)*)\.?\s+(.+)/)
+
+      if (sectionMatch && /^of\s+\d+$/i.test(sectionMatch[2].trim())) return
+
+      const isHeader = (
+        /^Number:/i.test(trimmedLine) ||
+        /^Version:/i.test(trimmedLine) ||
+        /^Effective Date:/i.test(trimmedLine) ||
+        /^Owning Department/i.test(trimmedLine) ||
+        /^Title\s+GMP/i.test(trimmedLine) ||
+        /^GMP 문서 체계$/i.test(trimmedLine) ||
+        /for Drug Master File/i.test(trimmedLine) ||
+        /품질경영실/i.test(trimmedLine)
+      )
+
+      if (isHeader) {
+        if (!firstHeaderBlockPassed) {
+          inHeaderBlock = true
+        } else {
+          return
+        }
+      } else if (inHeaderBlock) {
+        inHeaderBlock = false
+        firstHeaderBlockPassed = true
+      }
+
+      if (sectionMatch) {
+        flushParagraph(lineIdx)
+
+        const sectionNum = sectionMatch[1]
+        const sectionText = sectionMatch[2]
+        const parts = sectionNum.split('.')
+        globalDepth = parts.length - 1
+
+        const displayText = `${sectionNum} ${sectionText}`
+        const sectionBasePadding = globalDepth * indentIncrement
+        const sectionStyle = { paddingLeft: `${sectionBasePadding}px` }
+
+        if (globalDepth === 0) {
+          elements.push(
+            <div key={`section-${lineIdx}`} className="text-[16px] font-bold mt-[60px] mb-[8px] text-black border-b border-[#e0e0e0] pb-[10px]" style={sectionStyle}>
+              {displayText}
+            </div>
+          )
+        } else {
+          elements.push(
+            <div key={`section-${lineIdx}`} className="text-[15px] font-normal mt-[28px] mb-[8px] text-black" style={sectionStyle}>
+              {displayText}
+            </div>
+          )
+        }
+        globalLastWasSection = true
+        return
+      }
+
+      if (/^={10,}/.test(trimmedLine)) {
+        flushParagraph(lineIdx)
+        elements.push(
+          <div key={`separator-${lineIdx}`} className="text-[#bdc3c7] tracking-[2px] my-4 font-mono">
+            {trimmedLine}
+          </div>
+        )
+        return
+      }
+
+      const koreanChars = trimmedLine.match(/[가-힣]/g)?.length || 0
+      const englishChars = trimmedLine.match(/[a-zA-Z]/g)?.length || 0
+      const totalChars = koreanChars + englishChars
+      const isEnglishLine = totalChars > 0 && (englishChars / totalChars) > 0.7
+
+      if (paragraphLines.length > 0) {
+        const prevLine = paragraphLines[paragraphLines.length - 1]
+        const prevKorean = (prevLine.match(/[가-힣]/g)?.length || 0)
+        const prevEnglish = (prevLine.match(/[a-zA-Z]/g)?.length || 0)
+        const prevTotal = prevKorean + prevEnglish
+        const wasPrevKorean = prevTotal > 0 && (prevKorean / prevTotal) > 0.3
+
+        if (wasPrevKorean && isEnglishLine) {
+          flushParagraph(lineIdx)
+          paragraphStartIdx = lineIdx
+        }
+      }
+
+      if (paragraphLines.length === 0) {
+        paragraphStartIdx = lineIdx
+      }
+      paragraphLines.push(trimmedLine)
+
+      // suppress unused warning
+      void globalLastWasSection
+    })
+
+    flushParagraph(lines.length)
+
+    return (
+      <div style={{ width: '794px' }}>
+        <div className="bg-white" style={{ minHeight: '1123px', padding: '96px 90px' }}>
+          <div className="break-words text-black">
+            {elements}
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex-1 overflow-y-auto">
+      {/* 문서 헤더 */}
+      <div className="px-6 py-4 border-b border-dark-border bg-dark-deeper flex justify-between items-center">
+        <h2 className="text-[16px] font-medium text-txt-primary">{selectedDocument}</h2>
+        <div className="relative">
+          <button
+            className="bg-accent text-black border-none py-1.5 px-4 rounded text-[12px] font-bold cursor-pointer hover:bg-accent-hover transition-all duration-200 flex items-center gap-2 shadow-lg"
+            onClick={() => setIsDownloadOpen(!isDownloadOpen)}
+          >
+            📥 Download <span className="opacity-50">▼</span>
+          </button>
+
+          {isDownloadOpen && (
+            <div className="absolute right-0 mt-2 w-40 bg-dark-light border border-dark-border rounded shadow-2xl z-50 overflow-hidden">
+              <button
+                className="w-full text-left px-4 py-2.5 text-[12px] text-txt-primary hover:bg-dark-hover transition-colors flex items-center gap-2"
+                onClick={() => handleDownload('pdf')}
+              >
+                <span className="text-red-400">📄</span> PDF Document
+              </button>
+              <button
+                className="w-full text-left px-4 py-2.5 text-[12px] text-txt-primary hover:bg-dark-hover border-t border-dark-border transition-colors flex items-center gap-2"
+                onClick={() => handleDownload('docx')}
+              >
+                <span className="text-blue-400">📝</span> Word (.docx)
+              </button>
+              <button
+                className="w-full text-left px-4 py-2.5 text-[12px] text-txt-primary hover:bg-dark-hover border-t border-dark-border transition-colors flex items-center gap-2"
+                onClick={() => handleDownload('md')}
+              >
+                <span className="text-green-400">markdown</span> Markdown (.md)
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* 문서 내용 */}
+      <div className="p-0 bg-[#c8c8c8] flex flex-col items-center gap-[30px]">
+        {isEditing ? (
+          <div className="w-full max-w-[1100px] h-[calc(100vh-120px)] bg-dark-deeper border border-dark-border rounded overflow-hidden shadow-[0_10px_30px_rgba(0,0,0,0.3)]">
+            <textarea
+              className="document-editor w-full h-full bg-transparent text-[#d4d4d4] border-none p-[30px] font-mono text-[14px] leading-[1.6] resize-none outline-none"
+              value={editedContent}
+              onChange={(e) => setEditedContent(e.target.value)}
+              placeholder="문서 내용을 수정하세요..."
+            />
+          </div>
+        ) : (
+          renderDocument()
+        )}
+      </div>
+    </div>
+  )
+}
