@@ -64,6 +64,7 @@ function App() {
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [agentStatus, setAgentStatus] = useState<string>('연결 확인 중...')
   const [isConnected, setIsConnected] = useState(false)
+  const [isSaving, setIsSaving] = useState(false) // 저장 중 상태 추가
 
   // UI 상태
   const [selectedDocument, setSelectedDocument] = useState<string | null>(null)
@@ -82,6 +83,7 @@ function App() {
   const [suggestionIndex, setSuggestionIndex] = useState(0)
   const [mentionTriggerPos, setMentionTriggerPos] = useState<number | null>(null)
   const [selectedDocs, setSelectedDocs] = useState<string[]>([])
+  const [isDraggingOver, setIsDraggingOver] = useState(false)
   // 그래프 시각화 상태
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [graphData, setGraphData] = useState<{ nodes: any[], links: any[] } | null>(null)
@@ -143,6 +145,7 @@ function App() {
   const handleSaveDocument = async () => {
     if (!selectedDocument) return
 
+    setIsSaving(true) // 로딩 시작
     try {
       const response = await fetch(`${API_URL}/rag/document/save`, {
         method: 'POST',
@@ -158,8 +161,6 @@ function App() {
         setDocumentContent(editedContent)
         setIsEditing(false)
         alert(`문서가 저장되었습니다. (새 버전: ${data.version})`)
-        // 문서 목록 갱신을 위해 억지로 fetchDocumentContent 호출 가능하지만
-        // 여기서는 상태만 업데이트
       } else {
         const errorData = await response.json()
         alert(`저장 실패: ${errorData.detail || '알 수 없는 오류'}`)
@@ -167,6 +168,42 @@ function App() {
     } catch (error) {
       console.error('문서 저장 중 오류 발생:', error)
       alert('저장 중 오류가 발생했습니다.')
+    } finally {
+      setIsSaving(false) // 로딩 종료
+    }
+  }
+
+  const handleDownloadPDF = async () => {
+    if (!selectedDocument) return
+
+    try {
+      const url = `${API_URL}/rag/document/download/${encodeURIComponent(selectedDocument)}`
+      const response = await fetch(url)
+
+      if (response.ok) {
+        const blob = await response.blob()
+        const downloadUrl = window.URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = downloadUrl
+
+        const contentDisposition = response.headers.get('Content-Disposition')
+        let fileName = `${selectedDocument}.pdf`
+        if (contentDisposition && contentDisposition.includes('filename=')) {
+          fileName = contentDisposition.split('filename=')[1].replace(/"/g, '')
+        }
+
+        a.download = fileName
+        document.body.appendChild(a)
+        a.click()
+        window.URL.revokeObjectURL(downloadUrl)
+        document.body.removeChild(a)
+      } else {
+        const errorData = await response.json()
+        alert(`다운로드 실패: ${errorData.detail || '알 수 없는 오류'}`)
+      }
+    } catch (error) {
+      console.error('PDF 다운로드 중 오류 발생:', error)
+      alert('다운로드 중 오류가 발생했습니다.')
     }
   }
 
@@ -546,7 +583,29 @@ function App() {
         </div>
 
         {/* 가운데: 문서 뷰어 또는 그래프 시각화 */}
-        <main className="flex-1 bg-dark-bg overflow-y-auto flex flex-col transition-all duration-300">
+        <main
+          className={`flex-1 bg-dark-bg overflow-y-auto flex flex-col transition-all duration-300 relative ${isDraggingOver ? 'outline outline-2 outline-accent-blue outline-offset-[-2px]' : ''}`}
+          onDragOver={(e) => {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'copy';
+            if (!isDraggingOver) setIsDraggingOver(true);
+          }}
+          onDragLeave={() => setIsDraggingOver(false)}
+          onDrop={(e) => {
+            e.preventDefault();
+            setIsDraggingOver(false);
+            const docId = e.dataTransfer.getData('text/plain');
+            if (docId) handleDocumentSelect(docId);
+          }}
+        >
+          {isDraggingOver && (
+            <div className="absolute inset-0 bg-accent-blue/10 flex items-center justify-center z-50 pointer-events-none">
+              <div className="flex flex-col items-center gap-3 text-txt-primary">
+                <span className="text-[48px]">📄</span>
+                <span className="text-[16px]">여기에 드롭하여 문서 열기</span>
+              </div>
+            </div>
+          )}
           {activePanel === 'visualization' ? (
             // 전체 문서 그래프 시각화
             <div className="flex flex-col h-full overflow-hidden">
@@ -648,8 +707,15 @@ function App() {
           ) : selectedDocument && documentContent ? (
             // 문서 내용 표시
             <div className="flex-1 overflow-y-auto">
-              <div className="px-6 py-4 border-b border-dark-border bg-dark-deeper">
+              <div className="px-6 py-4 border-b border-dark-border bg-dark-deeper flex justify-between items-center">
                 <h2 className="text-[16px] font-medium text-txt-primary">{selectedDocument}</h2>
+                <button
+                  className="bg-dark-border text-txt-primary border-none py-1.5 px-3 rounded text-[12px] cursor-pointer hover:bg-dark-hover transition-colors duration-200"
+                  onClick={handleDownloadPDF}
+                  title="PDF로 다운로드"
+                >
+                  📥 PDF
+                </button>
               </div>
               <div className="py-10 px-5 bg-[#e0e0e0] flex flex-col items-center gap-[30px]">
                 {isEditing ? (
@@ -1051,6 +1117,17 @@ function App() {
       </div>
 
       {/* 업로드 모달 제거 (DocumentManagementPanel로 이동됨) */}
+
+      {/* 저장 중 로딩 오버레이 */}
+      {isSaving && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-[2000]">
+          <div className="bg-[#2d2d2d] border border-dark-border rounded-lg p-8 flex flex-col items-center gap-4 text-center">
+            <div className="w-10 h-10 border-4 border-dark-border border-t-accent-blue rounded-full animate-spin"></div>
+            <p className="text-txt-primary text-[14px] m-0">문서를 분석하고 저장하는 중입니다...</p>
+            <span className="text-txt-secondary text-[12px]">이 작업은 최대 1분 정도 소요될 수 있습니다.</span>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

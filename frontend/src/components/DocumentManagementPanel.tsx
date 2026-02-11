@@ -23,7 +23,6 @@ interface Version {
   created_at: string;
 }
 
-
 interface DocumentManagementPanelProps {
   onDocumentSelect?: (docId: string, content?: string) => void;
 }
@@ -127,7 +126,6 @@ export default function DocumentManagementPanel({ onDocumentSelect }: DocumentMa
       console.error('문서 내용 조회 실패:', error);
     }
   };
-
 
   // 문서 삭제 (RDB + Weaviate + Neo4j)
   const handleDeleteDocument = async () => {
@@ -259,6 +257,11 @@ export default function DocumentManagementPanel({ onDocumentSelect }: DocumentMa
                       <div
                         key={idx}
                         className={`flex items-center py-1.5 px-2 rounded cursor-pointer transition-colors duration-200 hover:bg-dark-hover ${selectedDoc === doc.doc_id ? 'bg-dark-active' : ''}`}
+                        draggable={true}
+                        onDragStart={(e) => {
+                          e.dataTransfer.setData('text/plain', doc.doc_id);
+                          e.dataTransfer.effectAllowed = 'copy';
+                        }}
                       >
                         {/* document-info */}
                         <div
@@ -280,7 +283,6 @@ export default function DocumentManagementPanel({ onDocumentSelect }: DocumentMa
           )}
         </div>
 
-        {/* version-list */}
         {selectedDoc && versions.length > 0 && (
           <div className="mb-4">
             <h3 className="text-[12px] text-txt-primary mt-0 mb-2 px-2 uppercase tracking-[0.5px]">버전 이력</h3>
@@ -306,7 +308,6 @@ export default function DocumentManagementPanel({ onDocumentSelect }: DocumentMa
             ))}
           </div>
         )}
-
       </div>
 
       {/* modal-overlay */}
