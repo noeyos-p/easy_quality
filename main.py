@@ -42,6 +42,86 @@ from backend.llm import (
     HUGGINGFACE_MODELS,
 )
 
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 설정 및 모델
+# ═══════════════════════════════════════════════════════════════════════════
+
+DEFAULT_CHUNK_SIZE = 500
+DEFAULT_OVERLAP = 50
+DEFAULT_CHUNK_METHOD = "article"
+DEFAULT_N_RESULTS = 7
+DEFAULT_SIMILARITY_THRESHOLD = 0.30
+USE_LANGGRAPH = True
+
+class SearchRequest(BaseModel):
+    query: str
+    collection: str = "documents"
+    n_results: int = DEFAULT_N_RESULTS
+    model: str = "multilingual-e5-small"
+    filter_doc: Optional[str] = None
+    similarity_threshold: Optional[float] = None
+
+class ChatRequest(BaseModel):
+    message: str
+    session_id: Optional[str] = None
+    collection: str = "documents"
+    n_results: int = DEFAULT_N_RESULTS
+    embedding_model: str = "multilingual-e5-small"
+    llm_model: str = "gpt-4o-mini"
+    llm_backend: str = "openai"
+    filter_doc: Optional[str] = None
+    similarity_threshold: Optional[float] = None
+
+class AskRequest(BaseModel):
+    query: str
+    collection: str = "documents"
+    n_results: int = DEFAULT_N_RESULTS
+    embedding_model: str = "multilingual-e5-small"
+    llm_model: str = "gpt-4o-mini"
+    llm_backend: str = "openai"
+    temperature: float = 0.7
+    filter_doc: Optional[str] = None
+    language: str = "ko"
+    max_tokens: int = 512
+    similarity_threshold: Optional[float] = None
+    include_sources: bool = True
+
+class LLMRequest(BaseModel):
+    prompt: str
+    model: str = "qwen2.5:3b"
+    backend: str = "ollama"
+    max_tokens: int = 256
+    temperature: float = 0.1
+
+class DeleteDocRequest(BaseModel):
+    doc_name: str
+    collection: str = "documents"
+    delete_from_neo4j: bool = True
+
+class SaveDocRequest(BaseModel):
+    doc_name: str
+    content: str
+    collection: str = "documents"
+    model: str = "multilingual-e5-small"
+
+PRESET_MODELS = {
+    "multilingual-e5-small": "intfloat/multilingual-e5-small",
+}
+
+device = "cuda" if torch.cuda.is_available() else "cpu"
+chat_histories: Dict[str, List[Dict]] = {}
+_graph_store = None
+
+def get_graph_store():
+    """Neo4j 그래프 스토어 싱글톤"""
+    global _graph_store
+    if _graph_store is None:
+        from backend.graph_store import Neo4jGraphStore
+        _graph_store = Neo4jGraphStore()
+        _graph_store.connect()
+    return _graph_store
+
 #  Document pipeline
 try:
     from backend.document_pipeline import process_document
@@ -82,93 +162,134 @@ app.add_middleware(
 )
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# 설정
-# ═══════════════════════════════════════════════════════════════════════════
+@app.post("/rag/document/save")
+async def save_document_content(request: SaveDocRequest):
+    """
+    수정된 문서 내용을 저장하고 DB 동기화
+    1. 본문에서 버전 추출 (재분석)
+    2. RDB에 신규 버전 INSERT
+    3. 기존 그래프/벡터 DB 삭제 후 재업로드 (Overwrite)
+    """
+    start_time = time.time()
+    doc_name = request.doc_name
+    content = request.content
+    
+    print(f"\n{'='*70}")
+    print(f"문서 수정 저장 [V2]: {doc_name}")
+    print(f"{'='*70}\n")
+    
+    try:
+        # 1. 문서 재분석 (파이프라인 재사용)
+        print(f"[1단계] 수정본 분석 및 버전 추출")
+        content_bytes = content.encode('utf-8')
+        
+        model_path = resolve_model_path(request.model)
+        embed_model = SentenceTransformer(model_path)
+        
+        # 파이프라인 실행
+        result = process_document(
+            file_path=f"{doc_name}.md",
+            content=content_bytes,
+            use_llm_metadata=True, # 메타데이터 및 버전 추출을 위해 활성화
+            embed_model=embed_model
+        )
+        
+        if not result.get("success"):
+            raise HTTPException(400, f"🔴 분석 실패: {result.get('errors')}")
+            
+        final_version = result.get("version", "1.0")
+        chunks_data = result["chunks"]
+        doc_id = result.get("doc_id", doc_name)
+        
+        print(f"  🟢 분석 완료: 버전 {final_version} 감지됨\n")
+        
+        # 2. 기존 검색 데이터 삭제 (Overwrite 정제)
+        print(f"[2단계] 기존 검색 인덱스 삭제 (Overwrite 준비)")
+        vector_store.delete_by_doc_name(doc_name, collection_name=request.collection)
+        
+        try:
+            graph = get_graph_store()
+            if graph.test_connection():
+                sop_id = doc_id
+                if not re.search(r'[A-Z]+-[A-Z]+-\d+', sop_id):
+                    sop_match = re.search(r'([A-Z]+-[A-Z]+-\d+)', doc_name, re.IGNORECASE)
+                    if sop_match:
+                        sop_id = sop_match.group(1).upper()
+                
+                graph.delete_document(sop_id)
+                print(f"  🟢 Neo4j 기존 데이터 삭제 완료 ({sop_id})")
+        except Exception as ge:
+            print(f"  ⚠ Neo4j 삭제 실패 (무시): {ge}")
 
-DEFAULT_CHUNK_SIZE = 500
-DEFAULT_OVERLAP = 50
-DEFAULT_CHUNK_METHOD = "article"
-DEFAULT_N_RESULTS = 7  #  5 -> 7 상향
-DEFAULT_SIMILARITY_THRESHOLD = 0.30  #  0.35 -> 0.30 (더 많은 맥락 확보)
-USE_LANGGRAPH = True  #  LangGraph 파이프라인 사용 여부
+        # 3. RDB 신규 버전 저장
+        print(f"\n[3단계] PostgreSQL 신규 버전 저장")
+        doc_id_db = sql_store.save_document(
+            doc_name=doc_name,
+            content=content,
+            doc_type="text/markdown",
+            version=final_version
+        )
+        
+        if doc_id_db:
+            batch_chunks = [
+                {
+                    "clause": c["metadata"].get("clause_id"),
+                    "content": c["text"],
+                    "metadata": c["metadata"]
+                }
+                for c in chunks_data
+            ]
+            sql_store.save_chunks_batch(doc_id_db, batch_chunks)
+            print(f"  🟢 RDB 저장 완료\n")
+        
+        # 4. 벡터 DB 재업로드
+        print(f"[4단계] Weaviate 벡터 재업로드")
+        texts = [c["text"] for c in chunks_data]
+        metadatas = [
+            {
+                **c["metadata"],
+                "chunk_method": "article",
+                "model": request.model,
+                "pipeline_version": "edit-save-v2.0", # 버전 상향
+            }
+            for c in chunks_data
+        ]
+        
+        vector_store.add_documents(
+            texts=texts,
+            metadatas=metadatas,
+            collection_name=request.collection,
+            model_name=model_path
+        )
+        print(f"  🟢 벡터 저장 완료\n")
+        
+        # 5. 그래프 DB 재업로드
+        print(f"[5단계] Neo4j 그래프 재업로드")
+        try:
+            graph = get_graph_store()
+            if graph.test_connection():
+                _upload_to_neo4j_from_pipeline(graph, result, f"{doc_name}.md")
+                print(f"  🟢 그래프 저장 완료\n")
+        except Exception as ge:
+            print(f"  ⚠ Neo4j 업로드 실패 (무시): {ge}")
+            
+        elapsed = round(time.time() - start_time, 2)
+        print(f"{'='*70}")
+        print(f"🟢 수정 저장 완료 [V2] ({elapsed}초)")
+        print(f"{'='*70}\n")
+        
+        return {
+            "success": True,
+            "doc_name": doc_name,
+            "version": final_version,
+            "elapsed": elapsed
+        }
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(500, f"저장 중 오류 발생: {str(e)}")
 
-PRESET_MODELS = {
-    "multilingual-e5-small": "intfloat/multilingual-e5-small",
-}
-
-
-device = "cuda" if torch.cuda.is_available() else "cpu"
-
-# 대화 히스토리 저장 (메모리)
-chat_histories: Dict[str, List[Dict]] = {}
-
-# Neo4j 그래프 스토어 (싱글톤)
-_graph_store = None
-
-
-def get_graph_store():
-    """Neo4j 그래프 스토어 싱글톤"""
-    global _graph_store
-    if _graph_store is None:
-        from backend.graph_store import Neo4jGraphStore
-        _graph_store = Neo4jGraphStore()
-        _graph_store.connect()
-    return _graph_store
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Pydantic 모델
-# ═══════════════════════════════════════════════════════════════════════════
-
-class SearchRequest(BaseModel):
-    query: str
-    collection: str = "documents"
-    n_results: int = DEFAULT_N_RESULTS
-    model: str = "multilingual-e5-small"
-    filter_doc: Optional[str] = None
-    similarity_threshold: Optional[float] = None
-
-
-class ChatRequest(BaseModel):
-    message: str
-    session_id: Optional[str] = None
-    collection: str = "documents"
-    n_results: int = DEFAULT_N_RESULTS
-    embedding_model: str = "multilingual-e5-small"
-    llm_model: str = "gpt-4o-mini"
-    llm_backend: str = "openai"
-    filter_doc: Optional[str] = None
-    similarity_threshold: Optional[float] = None
-
-
-class AskRequest(BaseModel):
-    query: str
-    collection: str = "documents"
-    n_results: int = DEFAULT_N_RESULTS
-    embedding_model: str = "multilingual-e5-small"
-    llm_model: str = "gpt-4o-mini"
-    llm_backend: str = "openai"  #  기본값 openai로 변경
-    temperature: float = 0.7
-    filter_doc: Optional[str] = None
-    language: str = "ko"
-    max_tokens: int = 512
-    similarity_threshold: Optional[float] = None
-    include_sources: bool = True
-
-
-class LLMRequest(BaseModel):
-    prompt: str
-    model: str = "qwen2.5:3b"
-    backend: str = "ollama"
-    max_tokens: int = 256
-    temperature: float = 0.1
-
-
-class DeleteDocRequest(BaseModel):
-    doc_name: str
-    collection: str = "documents"
-    delete_from_neo4j: bool = True  #  Neo4j에서도 삭제
 
 
 # ═══════════════════════════════════════════════════════════════════════════

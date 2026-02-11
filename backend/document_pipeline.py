@@ -636,9 +636,17 @@ def process_document(
 
         doc_title = Path(file_path).stem
 
-        # 1. PDF → 마크다운
-        print("\n[1/4] PDF → 마크다운 변환")
-        markdown = pdf_to_markdown(content)
+        # 1. 문서 변환 (PDF → 마크다운, 텍스트는 직접 사용)
+        file_ext = Path(file_path).suffix.lower()
+        if file_ext in ['.md', '.markdown', '.txt']:
+            print(f"\n[1/4] 텍스트 시스템 감지 ({file_ext}): 변환 생략 및 직접 로드")
+            if isinstance(content, bytes):
+                markdown = content.decode('utf-8')
+            else:
+                markdown = content
+        else:
+            print("\n[1/4] PDF → 마크다운 변환")
+            markdown = pdf_to_markdown(content)
 
         # 2. 조항 파싱
         print("\n[2/4] 조항 파싱")
