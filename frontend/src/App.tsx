@@ -57,6 +57,7 @@ function App() {
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [agentStatus, setAgentStatus] = useState<string>('연결 확인 중...')
   const [isConnected, setIsConnected] = useState(false)
+  const [isSaving, setIsSaving] = useState(false) // 저장 중 상태 추가
 
   // UI 상태
   const [selectedDocument, setSelectedDocument] = useState<string | null>(null)
@@ -136,6 +137,7 @@ function App() {
   const handleSaveDocument = async () => {
     if (!selectedDocument) return
 
+    setIsSaving(true) // 로딩 시작
     try {
       const response = await fetch(`${API_URL}/rag/document/save`, {
         method: 'POST',
@@ -151,8 +153,6 @@ function App() {
         setDocumentContent(editedContent)
         setIsEditing(false)
         alert(`문서가 저장되었습니다. (새 버전: ${data.version})`)
-        // 문서 목록 갱신을 위해 억지로 fetchDocumentContent 호출 가능하지만
-        // 여기서는 상태만 업데이트
       } else {
         const errorData = await response.json()
         alert(`저장 실패: ${errorData.detail || '알 수 없는 오류'}`)
@@ -160,6 +160,8 @@ function App() {
     } catch (error) {
       console.error('문서 저장 중 오류 발생:', error)
       alert('저장 중 오류가 발생했습니다.')
+    } finally {
+      setIsSaving(false) // 로딩 종료
     }
   }
 
@@ -1037,6 +1039,17 @@ function App() {
       </div>
 
       {/* 업로드 모달 제거 (DocumentManagementPanel로 이동됨) */}
+
+      {/* 저장 중 로딩 오버레이 */}
+      {isSaving && (
+        <div className="saving-overlay">
+          <div className="saving-loader">
+            <div className="spinner"></div>
+            <p>문서를 분석하고 저장하는 중입니다...</p>
+            <span>이 작업은 최대 1분 정도 소요될 수 있습니다.</span>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
