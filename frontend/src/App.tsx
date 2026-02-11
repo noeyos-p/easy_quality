@@ -11,18 +11,6 @@ import './App.css'
 // 타입 정의
 // ═══════════════════════════════════════════════════════════════════════════
 
-interface DocumentMetadata {
-  doc_id?: string
-  sop_id?: string
-  title?: string
-  version?: string
-  effective_date?: string
-  owning_dept?: string
-  total_chunks?: number
-  quality_score?: number
-  conversion_method?: string
-}
-
 interface RDBVerification {
   has_citations: boolean
   total_citations: number
@@ -783,7 +771,7 @@ function App() {
                   value={inputMessage}
                   onChange={handleInputChange}
                   onKeyDown={handleKeyPress}
-                  placeholder={selectedDocs.length > 0 ? "" : "Ask the Agent..."}
+                  placeholder={selectedDocs.length > 0 ? "" : "Ask the Agent...And Tag with @"}
                   className="agent-input"
                   rows={1}
                 />
