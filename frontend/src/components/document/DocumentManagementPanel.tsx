@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
-import docLargeIcon from '../assets/icons/document-manage.svg'; // Vector 21 - SOP, WI
-import docSmallIcon from '../assets/icons/document.svg';        // Vector 20 - FRM, 기타
+import docLargeIcon from '../../assets/icons/document-manage.svg'; // Vector 21 - SOP, WI
+import docSmallIcon from '../../assets/icons/document.svg';        // Vector 20 - FRM, 기타
 
 const API_URL = 'http://localhost:8000';
 
