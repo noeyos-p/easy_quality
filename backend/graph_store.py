@@ -537,6 +537,48 @@ class Neo4jGraphStore:
                 "relationships": record["rels"] or 0
             }
 
+    def get_full_graph(self) -> Dict:
+        """전체 문서 그래프 가져오기 (시각화용)"""
+        with self.driver.session(database=self.database) as session:
+            # 모든 Document 노드 가져오기
+            nodes_result = session.run("""
+                MATCH (d:Document)
+                OPTIONAL MATCH (d)-[:IS_TYPE]->(dt:DocumentType)
+                RETURN d.doc_id as id, d.title as title, d.version as version,
+                       dt.code as doc_type, dt.name_kr as type_name
+            """)
+
+            nodes = []
+            for record in nodes_result:
+                nodes.append({
+                    "id": record["id"],
+                    "title": record["title"],
+                    "version": record["version"],
+                    "doc_type": record["doc_type"],
+                    "type_name": record["type_name"]
+                })
+
+            # 모든 REFERENCES와 MENTIONS 관계 가져오기
+            links_result = session.run("""
+                MATCH (d1:Document)-[:REFERENCES]->(d2:Document)
+                RETURN DISTINCT d1.doc_id as source, d2.doc_id as target
+                UNION
+                MATCH (d1:Document)-[:HAS_SECTION]->(s:Section)-[:MENTIONS]->(d2:Document)
+                RETURN DISTINCT d1.doc_id as source, d2.doc_id as target
+            """)
+
+            links = []
+            for record in links_result:
+                links.append({
+                    "source": record["source"],
+                    "target": record["target"]
+                })
+
+            return {
+                "nodes": nodes,
+                "links": links
+            }
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 유틸리티: 문서 업로드 헬퍼
