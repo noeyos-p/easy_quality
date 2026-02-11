@@ -609,6 +609,7 @@ body {
    ═══════════════════════════════════════════════════════════════════════════ */
 
 @media (max-width: 1400px) {
+
   .document-management-panel,
   .document-visualization-panel {
     width: 300px;
@@ -938,6 +939,131 @@ body {
   color: var(--accent);
   font-weight: bold;
   margin-left: 8px;
+}
+
+/* 추가된 스타일 */
+.doc-link {
+  color: var(--accent);
+  text-decoration: underline;
+  cursor: pointer;
+  font-weight: 500;
+  padding: 1px 4px;
+  border-radius: 3px;
+  transition: all 0.2s;
+}
+
+.doc-link:hover {
+  background-color: rgba(255, 255, 255, 0.1);
+  color: var(--accent-hover);
+}
+
+.input-wrapper {
+  position: relative;
+}
+
+.suggestion-list {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  width: 100%;
+  max-height: 200px;
+  overflow-y: auto;
+  background: var(--bg-lighter);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.5);
+  z-index: 1000;
+  margin-bottom: 4px;
+}
+
+.suggestion-item {
+  padding: 8px 12px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-primary);
+  transition: background 0.2s;
+}
+
+.suggestion-item:hover,
+.suggestion-item.active {
+  background: var(--bg-hover);
+  color: var(--accent);
+}
+
+/* 선택된 문서 태그(Chip) 스타일 및 통합 입력창 */
+.input-wrapper {
+  position: relative;
+  background: var(--bg-lighter);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 10px;
+  transition: border-color 0.2s, box-shadow 0.2s;
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-height: 40px;
+}
+
+.input-wrapper:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px rgba(34, 209, 66, 0.2);
+}
+
+.selected-docs-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.doc-tag {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(34, 209, 66, 0.1);
+  border: 1px solid var(--accent);
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
+.doc-tag-name {
+  font-size: 11px;
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.doc-tag-remove {
+  background: transparent;
+  border: none;
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
+.agent-input {
+  flex: 1;
+  min-width: 120px;
+  background: transparent;
+  border: none;
+  padding: 6px 0;
+  color: var(--text-primary);
+  font-size: 13px;
+  resize: none;
+  min-height: 24px;
+  max-height: 120px;
+  font-family: inherit;
+  display: flex;
+  align-items: center;
+}
+
+.agent-input:focus {
+  outline: none;
 }
 
 /* RDB 검증 결과 스타일 */
