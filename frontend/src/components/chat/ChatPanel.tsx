@@ -1,0 +1,224 @@
+import { useState, useRef, useEffect } from 'react'
+import ChatMessageComponent from './ChatMessage'
+import InputArea from './InputArea'
+import type { ChatMessage } from '../../types'
+import { API_URL } from '../../types'
+
+interface ChatPanelProps {
+  isVisible: boolean
+  onDocumentSelect: (docId: string) => void
+}
+
+export default function ChatPanel({ isVisible, onDocumentSelect }: ChatPanelProps) {
+  const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [inputMessage, setInputMessage] = useState('')
+  const [isLoading, setIsLoading] = useState(false)
+  const [sessionId, setSessionId] = useState<string | null>(null)
+
+  const [docNames, setDocNames] = useState<{ id: number; name: string }[]>([])
+  const [suggestions, setSuggestions] = useState<{ id: number; name: string }[]>([])
+  const [showSuggestions, setShowSuggestions] = useState(false)
+  const [suggestionIndex, setSuggestionIndex] = useState(0)
+  const [mentionTriggerPos, setMentionTriggerPos] = useState<number | null>(null)
+  const [selectedDocs, setSelectedDocs] = useState<string[]>([])
+
+  const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set())
+
+  const chatEndRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [messages])
+
+  useEffect(() => {
+    const fetchDocNames = async () => {
+      try {
+        const response = await fetch(`${API_URL}/rag/doc-names`)
+        const data = await response.json()
+        if (data.doc_names) setDocNames(data.doc_names)
+      } catch (error) {
+        console.error('Failed to fetch doc names:', error)
+      }
+    }
+    fetchDocNames()
+  }, [])
+
+  const sendMessage = async () => {
+    if (!inputMessage.trim() || isLoading) return
+
+    const currentInput = inputMessage
+    const currentDocs = [...selectedDocs]
+
+    const formattedContent = currentDocs.length > 0
+      ? `${currentDocs.map(d => `@${d}`).join(' ')} ${currentInput}`
+      : currentInput
+
+    const userMessage: ChatMessage = { role: 'user', content: formattedContent, timestamp: new Date() }
+
+    setMessages(prev => [...prev, userMessage])
+    setInputMessage('')
+    setIsLoading(true)
+
+    const startTime = Date.now()
+
+    try {
+      const response = await fetch(`${API_URL}/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: currentDocs.length > 0
+            ? `[Selected Documents: ${currentDocs.join(', ')}]\n${currentInput}`
+            : currentInput,
+          session_id: sessionId,
+          llm_model: 'gpt-4o-mini',
+        }),
+      })
+
+      const thinkingTime = Math.floor((Date.now() - startTime) / 1000)
+
+      if (response.ok) {
+        const data = await response.json()
+        if (!sessionId) setSessionId(data.session_id)
+
+        const assistantMessage: ChatMessage = {
+          role: 'assistant',
+          content: data.answer || '답변을 생성하지 못했습니다.',
+          timestamp: new Date(),
+          thoughtProcess: data.agent_log ? JSON.stringify(data.agent_log, null, 2) : 'Agent reasoning...',
+          thinkingTime,
+          evaluation_scores: data.evaluation_scores,
+        }
+        setMessages(prev => [...prev, assistantMessage])
+      } else {
+        const error = await response.json()
+        setMessages(prev => [...prev, { role: 'assistant', content: `오류가 발생했습니다: ${error.detail}`, timestamp: new Date() }])
+      }
+    } catch (error) {
+      setMessages(prev => [...prev, { role: 'assistant', content: `네트워크 오류: ${error}`, timestamp: new Date() }])
+    } finally {
+      setIsLoading(false)
+      setSelectedDocs([])
+    }
+  }
+
+  const handleKeyPress = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      if (showSuggestions && suggestions.length > 0) {
+        e.preventDefault()
+        selectSuggestion(suggestions[suggestionIndex].name)
+      } else {
+        e.preventDefault()
+        sendMessage()
+      }
+    } else if (showSuggestions) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        setSuggestionIndex(prev => (prev + 1) % suggestions.length)
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        setSuggestionIndex(prev => (prev - 1 + suggestions.length) % suggestions.length)
+      } else if (e.key === 'Escape') {
+        setShowSuggestions(false)
+      }
+    }
+  }
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const value = e.target.value
+    const cursorPos = e.target.selectionStart
+    setInputMessage(value)
+
+    const lastAtPos = value.lastIndexOf('@', cursorPos - 1)
+    if (lastAtPos !== -1) {
+      const textAfterAt = value.substring(lastAtPos + 1, cursorPos)
+      if (!textAfterAt.includes(' ')) {
+        const filtered = docNames.filter(doc =>
+          doc.name.toLowerCase().includes(textAfterAt.toLowerCase())
+        )
+        setSuggestions(filtered)
+        setShowSuggestions(filtered.length > 0)
+        setSuggestionIndex(0)
+        setMentionTriggerPos(lastAtPos)
+        return
+      }
+    }
+    setShowSuggestions(false)
+  }
+
+  const selectSuggestion = (name: string) => {
+    if (mentionTriggerPos !== null) {
+      const before = inputMessage.substring(0, mentionTriggerPos)
+      const input = document.querySelector('.agent-input') as HTMLTextAreaElement
+      const currentPos = input?.selectionStart || mentionTriggerPos + 1
+      const afterAt = inputMessage.substring(currentPos)
+
+      const newValue = before + (afterAt.startsWith(' ') ? afterAt.substring(1) : afterAt)
+      setInputMessage(newValue)
+
+      if (!selectedDocs.includes(name)) {
+        setSelectedDocs(prev => [...prev, name])
+      }
+      setShowSuggestions(false)
+      setMentionTriggerPos(null)
+    }
+  }
+
+  const removeSelectedDoc = (docId: string) => {
+    setSelectedDocs(prev => prev.filter(id => id !== docId))
+  }
+
+  const toggleSection = (section: string) => {
+    const newSet = new Set(expandedSections)
+    if (newSet.has(section)) newSet.delete(section)
+    else newSet.add(section)
+    setExpandedSections(newSet)
+  }
+
+  return (
+    <aside className={`flex-shrink-0 bg-dark-deeper border-l border-dark-border flex flex-col overflow-hidden transition-[width,opacity,border-color] duration-300 ease-in-out ${!isVisible ? 'w-0 opacity-0 border-l-transparent pointer-events-none' : 'w-[420px]'}`}>
+      <div className="flex justify-between items-center px-4 py-2 h-[35px] border-b border-dark-border">
+        <span className="text-[13px] font-medium text-txt-primary">Agent Chat</span>
+      </div>
+
+      <div className="flex-1 flex flex-col overflow-hidden">
+        <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-4">
+          {messages.map((msg, index) => (
+            <div key={index} className="flex flex-col gap-2">
+              <ChatMessageComponent
+                msg={msg}
+                index={index}
+                expandedSections={expandedSections}
+                toggleSection={toggleSection}
+                onDocumentSelect={onDocumentSelect}
+              />
+            </div>
+          ))}
+
+          {isLoading && (
+            <div className="flex flex-col gap-2">
+              <div className="typing-indicator">
+                <span></span><span></span><span></span>
+                Processing request...
+              </div>
+            </div>
+          )}
+          <div ref={chatEndRef} />
+        </div>
+
+        <InputArea
+          inputMessage={inputMessage}
+          isLoading={isLoading}
+          selectedDocs={selectedDocs}
+          suggestions={suggestions}
+          showSuggestions={showSuggestions}
+          suggestionIndex={suggestionIndex}
+          onInputChange={handleInputChange}
+          onKeyDown={handleKeyPress}
+          onSend={sendMessage}
+          onSelectSuggestion={selectSuggestion}
+          onRemoveDoc={removeSelectedDoc}
+        />
+      </div>
+    </aside>
+  )
+}

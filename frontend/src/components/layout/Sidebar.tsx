@@ -1,6 +1,6 @@
-import documentManageIcon from '../assets/icons/document-manage.svg';
-import graphIcon from '../assets/icons/graph.svg';
-import updateIcon from '../assets/icons/update.svg';
+import documentManageIcon from '../../assets/icons/document-manage.svg';
+import graphIcon from '../../assets/icons/graph.svg';
+import updateIcon from '../../assets/icons/update.svg';
 
 interface SidebarProps {
   activePanel: 'documents' | 'visualization' | 'history' | null;
