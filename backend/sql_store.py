@@ -332,6 +332,24 @@ class SQLStore:
         except Exception:
             return []
 
+    def get_all_documents(self) -> List[Dict]:
+        """모든 문서 목록 조회"""
+        query = """
+            SELECT d.id, dn.name as doc_name, d.version, d.status, d.doc_type,
+                   d.created_at, d.effective_at
+            FROM document d
+            JOIN doc_name dn ON d.doc_name_id = dn.id
+            ORDER BY dn.name, d.version DESC
+        """
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    cur.execute(query)
+                    return cur.fetchall()
+        except Exception as e:
+            print(f"🔴 문서 목록 조회 실패: {e}")
+            return []
+
     def get_clause_diff(self, doc_name: str, v1: str, v2: str) -> List[Dict]:
         """두 버전 간의 조항 단위 비교 (Added, Deleted, Modified)"""
         print(f"[SQLStore] 조항 비교 시작: {doc_name} v{v1} vs {v2}")

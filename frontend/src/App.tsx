@@ -2,6 +2,9 @@ import { useState, useRef, useEffect } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import MermaidRenderer from './components/MermaidRenderer'
+import Sidebar from './components/Sidebar'
+import DocumentManagementPanel from './components/DocumentManagementPanel'
+import DocumentVisualizationPanel from './components/DocumentVisualizationPanel'
 import './App.css'
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -79,21 +82,11 @@ function App() {
   // UI 상태
   const [selectedDocument, setSelectedDocument] = useState<string | null>(null)
   const [selectedDocMetadata, setSelectedDocMetadata] = useState<DocumentMetadata | null>(null)
+  const [documentContent, setDocumentContent] = useState<string | null>(null)
   const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set())
-  const [isUploadModalOpen, setIsUploadModalOpen] = useState(false)
-  const [uploadFile, setUploadFile] = useState<File | null>(null)
-  const [isUploading, setIsUploading] = useState(false)
-  const [uploadProgress, setUploadProgress] = useState<string>('')
+  const [activePanel, setActivePanel] = useState<'documents' | 'visualization' | null>(null)
 
-  // 파일 트리 상태 (데모 데이터)
-  const [fileTree, setFileTree] = useState<FileNode[]>([
-    {
-      name: 'Uploaded Documents',
-      type: 'folder',
-      expanded: true,
-      children: [], // 업로드된 파일이 여기 추가됨
-    },
-  ])
+  // 파일 트리 상태 제거 (문서 관리 패널로 이동됨)
 
   const chatEndRef = useRef<HTMLDivElement>(null)
 
@@ -200,71 +193,7 @@ function App() {
     }
   }
 
-  const handleUpload = async () => {
-    if (!uploadFile) return
-
-    setIsUploading(true)
-    setUploadProgress('파일 업로드 중...')
-    const formData = new FormData()
-    formData.append('file', uploadFile)
-    formData.append('chunk_size', '500')
-    formData.append('chunk_overlap', '50')
-    formData.append('use_langgraph', 'true')
-    formData.append('use_llm_metadata', 'true')
-
-    try {
-      const response = await fetch(`${API_URL}/rag/upload`, {
-        method: 'POST',
-        body: formData,
-      })
-
-      if (response.ok) {
-        const data = await response.json()
-
-        // 메타데이터 구성
-        const metadata: DocumentMetadata = {
-          doc_id: data.metadata?.doc_id || data.sop_id,
-          sop_id: data.sop_id,
-          title: data.doc_title || data.filename,
-          version: data.metadata?.version,
-          effective_date: data.metadata?.effective_date,
-          owning_dept: data.metadata?.owning_dept,
-          total_chunks: data.chunks,
-          quality_score: data.quality_score,
-          conversion_method: data.conversion_method,
-        }
-
-        setUploadProgress(`[OK] 업로드 완료!\n파일: ${data.filename}\n청크: ${data.chunks}개\n품질: ${(data.quality_score * 100).toFixed(0)}%`)
-
-        // 파일 트리에 추가
-        setFileTree(prev => {
-          const newTree = [...prev]
-          if (newTree[0].children) {
-            newTree[0].children.push({
-              name: data.filename,
-              type: 'file',
-              icon: '[FILE]',
-              metadata: metadata
-            })
-          }
-          return newTree
-        })
-
-        setTimeout(() => {
-          setIsUploadModalOpen(false)
-          setUploadFile(null)
-          setUploadProgress('')
-        }, 2000)
-      } else {
-        const error = await response.json()
-        setUploadProgress(`[ERROR] 업로드 실패: ${error.detail}`)
-      }
-    } catch (error) {
-      setUploadProgress(`[ERROR] 네트워크 오류: ${error}`)
-    } finally {
-      setIsUploading(false)
-    }
-  }
+  // handleUpload 제거 (DocumentManagementPanel로 이동됨)
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -283,36 +212,33 @@ function App() {
     setExpandedSections(newSet)
   }
 
+  // renderFileTree 제거 (필요 없음)
+
   // ─────────────────────────────────────────────────────────────
-  // 렌더링 헬퍼
+  // 문서 선택 핸들러
   // ─────────────────────────────────────────────────────────────
 
-  const renderFileTree = (nodes: FileNode[], depth = 0) => {
-    return nodes.map((node, index) => (
-      <div key={index} className="tree-node">
-        <div
-          className="tree-item"
-          style={{ paddingLeft: `${depth * 16 + 8}px` }}
-          onClick={() => {
-            if (node.type === 'file') {
-              setSelectedDocument(node.name)
-              setSelectedDocMetadata(node.metadata || null)
-            }
-          }}
-        >
-          {node.type === 'folder' && (
-            <span className="tree-chevron">{node.expanded ? '▼' : '▶'}</span>
-          )}
-          <span className="tree-icon">{node.icon || (node.type === 'folder' ? '[DIR]' : '[FILE]')}</span>
-          <span className="tree-name">{node.name}</span>
-        </div>
-        {node.expanded && node.children && (
-          <div className="tree-children">
-            {renderFileTree(node.children, depth + 1)}
-          </div>
-        )}
-      </div>
-    ))
+  const handleDocumentSelect = async (docId: string, content?: string) => {
+    setSelectedDocument(docId)
+    if (content) {
+      setDocumentContent(content)
+    } else {
+      // 내용이 제공되지 않으면 API에서 가져오기
+      try {
+        const response = await fetch(`${API_URL}/rag/document/${docId}/content`)
+        const data = await response.json()
+        console.log('📄 [Document API Response]', data)
+
+        // 원본 마크다운 content를 그대로 사용 (마크다운 렌더링은 JSX에서 처리)
+        if (data.content) {
+          setDocumentContent(data.content)
+        } else {
+          setDocumentContent('내용을 불러올 수 없습니다.')
+        }
+      } catch (error) {
+        setDocumentContent('문서 내용을 가져오는 중 오류가 발생했습니다.')
+      }
+    }
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -334,93 +260,26 @@ function App() {
       </header>
 
       <div className="main-container">
-        {/* 왼쪽: Explorer */}
-        <aside className="explorer">
-          <div className="explorer-header">
-            <span className="explorer-title">Documents</span>
-            <button
-              className="icon-btn-small"
-              onClick={() => setIsUploadModalOpen(true)}
-              title="Upload Document"
-            >
-              + Upload
-            </button>
-          </div>
-          <div className="file-tree">
-            {renderFileTree(fileTree)}
-          </div>
-        </aside>
+        {/* 왼쪽: 사이드바 아이콘 */}
+        <Sidebar activePanel={activePanel} onPanelChange={setActivePanel} />
 
-        {/* 가운데: 문서 뷰어 (Optional) */}
+        {/* 문서 관리 패널 */}
+        {activePanel === 'documents' && (
+          <DocumentManagementPanel onDocumentSelect={handleDocumentSelect} />
+        )}
+
+        {/* 문서 시각화 패널 */}
+        {activePanel === 'visualization' && <DocumentVisualizationPanel />}
+
+        {/* 가운데: 문서 뷰어 */}
         <main className="document-viewer">
-          {selectedDocument ? (
+          {selectedDocument && documentContent ? (
             <div className="document-content">
               <div className="document-header">
-                <h2>[FILE] {selectedDocument}</h2>
+                <h2>{selectedDocument}</h2>
               </div>
               <div className="document-body">
-                {selectedDocMetadata ? (
-                  <div className="metadata-section">
-                    <h3>[METADATA] 문서 메타데이터</h3>
-                    <table className="metadata-table">
-                      <tbody>
-                        {selectedDocMetadata.doc_id && (
-                          <tr>
-                            <td className="label">문서 ID:</td>
-                            <td className="value">{selectedDocMetadata.doc_id}</td>
-                          </tr>
-                        )}
-                        {selectedDocMetadata.title && (
-                          <tr>
-                            <td className="label">제목:</td>
-                            <td className="value">{selectedDocMetadata.title}</td>
-                          </tr>
-                        )}
-                        {selectedDocMetadata.version && (
-                          <tr>
-                            <td className="label">버전:</td>
-                            <td className="value">{selectedDocMetadata.version}</td>
-                          </tr>
-                        )}
-                        {selectedDocMetadata.effective_date && (
-                          <tr>
-                            <td className="label">시행일:</td>
-                            <td className="value">{selectedDocMetadata.effective_date}</td>
-                          </tr>
-                        )}
-                        {selectedDocMetadata.owning_dept && (
-                          <tr>
-                            <td className="label">담당부서:</td>
-                            <td className="value">{selectedDocMetadata.owning_dept}</td>
-                          </tr>
-                        )}
-                        {selectedDocMetadata.total_chunks && (
-                          <tr>
-                            <td className="label">총 청크 수:</td>
-                            <td className="value">{selectedDocMetadata.total_chunks}</td>
-                          </tr>
-                        )}
-                        {selectedDocMetadata.quality_score !== undefined && (
-                          <tr>
-                            <td className="label">품질 점수:</td>
-                            <td className="value">{(selectedDocMetadata.quality_score * 100).toFixed(0)}%</td>
-                          </tr>
-                        )}
-                        {selectedDocMetadata.conversion_method && (
-                          <tr>
-                            <td className="label">변환 방법:</td>
-                            <td className="value">{selectedDocMetadata.conversion_method}</td>
-                          </tr>
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
-                ) : (
-                  <>
-                    <p>문서 미리보기 기능은 준비 중입니다.</p>
-                    <p>선택된 파일: {selectedDocument}</p>
-                  </>
-                )}
+                <pre className="document-text-plain">{documentContent}</pre>
               </div>
             </div>
           ) : (
@@ -644,41 +503,7 @@ function App() {
         </aside>
       </div>
 
-      {/* 업로드 모달 */}
-      {isUploadModalOpen && (
-        <div className="modal-overlay">
-          <div className="modal-content">
-            <h3>[UPLOAD] Upload Document</h3>
-            <div className="upload-form">
-              <input
-                type="file"
-                onChange={(e) => setUploadFile(e.target.files ? e.target.files[0] : null)}
-                accept=".pdf,.docx,.doc,.html,.md,.txt"
-                className="file-input"
-              />
-
-
-
-              {uploadProgress && (
-                <div className="upload-progress">
-                  <pre>{uploadProgress}</pre>
-                </div>
-              )}
-            </div>
-
-            <div className="modal-actions">
-              <button onClick={() => {
-                setIsUploadModalOpen(false)
-                setUploadFile(null)
-                setUploadProgress('')
-              }}>Cancel</button>
-              <button onClick={handleUpload} disabled={!uploadFile || isUploading}>
-                {isUploading ? '[WAIT] Uploading...' : '[OK] Upload'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* 업로드 모달 제거 (DocumentManagementPanel로 이동됨) */}
     </div>
   )
 }

@@ -564,9 +564,26 @@ def list_documents(collection_name: str = DEFAULT_COLLECTION, model_name: Option
             if key not in docs:
                 try: meta = json.loads(obj.properties.get('metadata_json', '{}'))
                 except: meta = {}
+
+                doc_title = meta.get('doc_title') or meta.get('title') or ''
+
+                # doc_id 추출 (우선순위: metadata.doc_id > doc_name > doc_title에서 추출)
+                doc_id = meta.get('doc_id') or doc_name
+
+                # doc_id가 비어있거나 'unknown'이면 doc_title에서 추출 시도
+                if not doc_id or doc_id == 'unknown':
+                    import re
+                    # EQ-SOP-00010, EQ-WI-00012 같은 패턴 추출
+                    match = re.search(r'(EQ-[A-Z]+-\d+)', doc_title)
+                    if match:
+                        doc_id = match.group(1)
+                    else:
+                        doc_id = doc_title.split('_')[0] if '_' in doc_title else doc_title
+
                 docs[key] = {
+                    "doc_id": doc_id,
                     "doc_name": doc_name,
-                    "doc_title": meta.get('doc_title') or meta.get('title'),
+                    "doc_title": doc_title,
                     "chunk_count": 0,
                     "model": model,
                     "collection": cls
