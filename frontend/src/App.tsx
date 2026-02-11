@@ -11,27 +11,6 @@ import './App.css'
 // 타입 정의
 // ═══════════════════════════════════════════════════════════════════════════
 
-interface FileNode {
-  name: string
-  type: 'file' | 'folder'
-  icon?: string
-  children?: FileNode[]
-  expanded?: boolean
-  metadata?: DocumentMetadata
-}
-
-interface DocumentMetadata {
-  doc_id?: string
-  sop_id?: string
-  title?: string
-  version?: string
-  effective_date?: string
-  owning_dept?: string
-  total_chunks?: number
-  quality_score?: number
-  conversion_method?: string
-}
-
 interface RDBVerification {
   has_citations: boolean
   total_citations: number
@@ -81,10 +60,16 @@ function App() {
 
   // UI 상태
   const [selectedDocument, setSelectedDocument] = useState<string | null>(null)
-  const [selectedDocMetadata, setSelectedDocMetadata] = useState<DocumentMetadata | null>(null)
   const [documentContent, setDocumentContent] = useState<string | null>(null)
   const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set())
   const [activePanel, setActivePanel] = useState<'documents' | 'visualization' | null>(null)
+
+  // @멘션 상태
+  const [docNames, setDocNames] = useState<{ id: number; name: string }[]>([])
+  const [suggestions, setSuggestions] = useState<{ id: number; name: string }[]>([])
+  const [showSuggestions, setShowSuggestions] = useState(false)
+  const [suggestionIndex, setSuggestionIndex] = useState(0)
+  const [mentionTriggerPos, setMentionTriggerPos] = useState<number | null>(null)
 
   // 파일 트리 상태 제거 (문서 관리 패널로 이동됨)
 
@@ -109,6 +94,22 @@ function App() {
     }
 
     checkBackendStatus()
+  }, [])
+
+  // 문서 이름 목록 가져오기
+  useEffect(() => {
+    const fetchDocNames = async () => {
+      try {
+        const response = await fetch(`${API_URL}/rag/doc-names`)
+        const data = await response.json()
+        if (data.doc_names) {
+          setDocNames(data.doc_names)
+        }
+      } catch (error) {
+        console.error('Failed to fetch doc names:', error)
+      }
+    }
+    fetchDocNames()
   }, [])
 
   useEffect(() => {
@@ -197,8 +198,59 @@ function App() {
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault()
-      sendMessage()
+      if (showSuggestions && suggestions.length > 0) {
+        e.preventDefault()
+        selectSuggestion(suggestions[suggestionIndex].name)
+      } else {
+        e.preventDefault()
+        sendMessage()
+      }
+    } else if (showSuggestions) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        setSuggestionIndex(prev => (prev + 1) % suggestions.length)
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        setSuggestionIndex(prev => (prev - 1 + suggestions.length) % suggestions.length)
+      } else if (e.key === 'Escape') {
+        setShowSuggestions(false)
+      }
+    }
+  }
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const value = e.target.value
+    const cursorPos = e.target.selectionStart
+    setInputMessage(value)
+
+    const lastAtPos = value.lastIndexOf('@', cursorPos - 1)
+    if (lastAtPos !== -1) {
+      const textAfterAt = value.substring(lastAtPos + 1, cursorPos)
+      if (!textAfterAt.includes(' ')) {
+        const filtered = docNames.filter(doc =>
+          doc.name.toLowerCase().includes(textAfterAt.toLowerCase())
+        )
+        setSuggestions(filtered)
+        setShowSuggestions(filtered.length > 0)
+        setSuggestionIndex(0)
+        setMentionTriggerPos(lastAtPos)
+        return
+      }
+    }
+    setShowSuggestions(false)
+  }
+
+  const selectSuggestion = (name: string) => {
+    if (mentionTriggerPos !== null) {
+      const before = inputMessage.substring(0, mentionTriggerPos)
+      const input = document.querySelector('.agent-input') as HTMLTextAreaElement
+      const currentPos = input?.selectionStart || mentionTriggerPos + 1
+      const afterAt = inputMessage.substring(currentPos)
+
+      const newValue = before + name + ' ' + (afterAt.startsWith(' ') ? afterAt.substring(1) : afterAt)
+      setInputMessage(newValue)
+      setShowSuggestions(false)
+      setMentionTriggerPos(null)
     }
   }
 
@@ -332,6 +384,41 @@ function App() {
                         <ReactMarkdown
                           remarkPlugins={[remarkGfm]}
                           components={{
+                            p({ children }) {
+                              // 문서 ID 패턴 (예: EQ-SOP-00001, EQ-WI-00012) 감지하여 클릭 가능한 링크로 변환
+                              const docPattern = /(EQ-(?:SOP|WI)-\d{5}(?:\([\d.,\s]+\))?)/g;
+
+                              const processText = (text: string) => {
+                                const parts = text.split(docPattern);
+                                return parts.map((part, i) => {
+                                  if (docPattern.test(part)) {
+                                    // 상세 번호(괄호 안) 제외하고 순수 ID만 추출
+                                    const docId = part.split('(')[0];
+                                    return (
+                                      <span
+                                        key={i}
+                                        className="doc-link"
+                                        onClick={() => handleDocumentSelect(docId)}
+                                      >
+                                        {part}
+                                      </span>
+                                    );
+                                  }
+                                  return part;
+                                });
+                              };
+
+                              const recurse = (node: any): any => {
+                                if (typeof node === 'string') return processText(node);
+                                if (Array.isArray(node)) return node.map(recurse);
+                                if (node?.props?.children) {
+                                  return { ...node, props: { ...node.props, children: recurse(node.props.children) } };
+                                }
+                                return node;
+                              };
+
+                              return <p>{recurse(children)}</p>;
+                            },
                             code({ node, inline, className, children, ...props }: any) {
                               const match = /language-(\w+)/.exec(className || '')
                               const language = match ? match[1] : ''
@@ -484,12 +571,25 @@ function App() {
               <div className="input-wrapper">
                 <textarea
                   value={inputMessage}
-                  onChange={(e) => setInputMessage(e.target.value)}
-                  onKeyPress={handleKeyPress}
+                  onChange={handleInputChange}
+                  onKeyDown={handleKeyPress}
                   placeholder="Ask the Agent..."
                   className="agent-input"
                   rows={1}
                 />
+                {showSuggestions && (
+                  <div className="suggestion-list">
+                    {suggestions.map((doc, idx) => (
+                      <div
+                        key={doc.id}
+                        className={`suggestion-item ${idx === suggestionIndex ? 'active' : ''}`}
+                        onClick={() => selectSuggestion(doc.name)}
+                      >
+                        {doc.name}
+                      </div>
+                    ))}
+                  </div>
+                )}
                 <button
                   className="send-btn"
                   onClick={sendMessage}
