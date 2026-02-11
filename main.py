@@ -379,7 +379,11 @@ async def upload_document(
         print(f"[3단계] PostgreSQL 저장")
 
         try:
-            full_markdown = "\n\n".join([c.text for c in chunks])
+            # PDF에서 추출한 원본 텍스트 그대로 사용 (조항 번호 포함)
+            original_text = result.get("markdown", "")
+            if not original_text:
+                # fallback: 청크들을 합침
+                original_text = "\n\n".join([c.text for c in chunks])
 
             # 파이프라인에서 추출된 버전 또는 사용자 입력 버전 결정
             final_version = version or result.get("version", "1.0")
@@ -389,7 +393,7 @@ async def upload_document(
 
             doc_id_db = sql_store.save_document(
                 doc_name=doc_id,
-                content=full_markdown,
+                content=original_text,  # PDF 원본 텍스트 그대로 저장
                 doc_type=filename.split('.')[-1] if '.' in filename else None,
                 version=final_version
             )
@@ -627,9 +631,117 @@ def generate_llm(request: LLMRequest):
 
 @app.get("/rag/documents")
 def list_documents(collection: str = "documents"):
-    """문서 목록"""
-    docs = vector_store.list_documents(collection)
-    return {"documents": docs, "collection": collection}
+    """문서 목록 (RDB에서 조회)"""
+    try:
+        # SQL Store에서 모든 문서 조회
+        all_docs = sql_store.get_all_documents()
+
+        # 문서별로 그룹화 (같은 문서의 여러 버전)
+        docs_dict = {}
+        for doc in all_docs:
+            doc_name = doc.get('doc_name')
+            if doc_name not in docs_dict:
+                # 첫 번째 버전을 대표로 사용
+                docs_dict[doc_name] = {
+                    "doc_id": doc_name,
+                    "doc_name": doc_name,
+                    "doc_type": doc.get('doc_type'),
+                    "version": doc.get('version'),
+                    "created_at": doc.get('created_at'),
+                    "latest_version": doc.get('version')
+                }
+            else:
+                # 최신 버전 업데이트
+                current = docs_dict[doc_name]
+                if doc.get('version', '0') > current.get('latest_version', '0'):
+                    current['latest_version'] = doc.get('version')
+                    current['version'] = doc.get('version')
+                    current['created_at'] = doc.get('created_at')
+
+        return {"documents": list(docs_dict.values()), "collection": collection}
+    except Exception as e:
+        print(f"문서 목록 조회 실패: {e}")
+        return {"documents": [], "collection": collection}
+
+
+@app.get("/rag/document/{doc_name}/versions")
+def get_document_versions(doc_name: str):
+    """문서 버전 목록 조회"""
+    try:
+        versions = sql_store.get_document_versions(doc_name)
+        if not versions:
+            raise HTTPException(404, f"문서를 찾을 수 없습니다: {doc_name}")
+        return {
+            "doc_name": doc_name,
+            "versions": versions,
+            "count": len(versions)
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"버전 조회 실패: {str(e)}")
+
+
+@app.get("/rag/document/{doc_name}/content")
+def get_document_content(doc_name: str, version: Optional[str] = None):
+    """문서 전체 내용 조회"""
+    try:
+        doc = sql_store.get_document_by_name(doc_name, version)
+        if not doc:
+            raise HTTPException(404, f"문서를 찾을 수 없습니다: {doc_name} (v{version or '최신'})")
+
+        # 청크 조회
+        chunks = sql_store.get_chunks_by_document(doc['id'])
+
+        return {
+            "doc_name": doc_name,
+            "version": doc.get('version', '1.0'),
+            "doc_type": doc.get('doc_type'),
+            "created_at": doc.get('created_at'),
+            "content": doc.get('content', ''),
+            "chunks": chunks,
+            "chunk_count": len(chunks)
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"문서 조회 실패: {str(e)}")
+
+
+@app.get("/rag/document/{doc_name}/metadata")
+def get_document_metadata(doc_name: str, version: Optional[str] = None):
+    """문서 메타데이터 조회"""
+    try:
+        doc = sql_store.get_document_by_name(doc_name, version)
+        if not doc:
+            raise HTTPException(404, f"문서를 찾을 수 없습니다: {doc_name}")
+
+        # 청크 통계
+        chunks = sql_store.get_chunks_by_document(doc['id'])
+
+        # 조항 통계 (메타데이터에서 추출)
+        clause_ids = set()
+        for chunk in chunks:
+            metadata = chunk.get('metadata', {})
+            if isinstance(metadata, dict):
+                clause_id = metadata.get('clause_id')
+                if clause_id:
+                    clause_ids.add(clause_id)
+
+        return {
+            "doc_name": doc_name,
+            "version": doc.get('version', '1.0'),
+            "doc_type": doc.get('doc_type'),
+            "created_at": doc.get('created_at'),
+            "chunk_count": len(chunks),
+            "clause_count": len(clause_ids),
+            "total_length": len(doc.get('content', '')),
+            "clauses": sorted(list(clause_ids), key=lambda x: [int(n) if n.isdigit() else n for n in x.split('.')])
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"메타데이터 조회 실패: {str(e)}")
 
 
 @app.delete("/rag/document")
@@ -853,6 +965,226 @@ def graph_search_terms(term: str):
         return {"term": term, "results": results, "count": len(results)}
     except Exception as e:
         raise HTTPException(500, f"용어 검색 실패: {str(e)}")
+
+
+@app.get("/graph/visualization/{doc_id}")
+def graph_get_visualization(doc_id: str, format: str = "mermaid"):
+    """
+    문서 관계 시각화 데이터 (프론트엔드용)
+
+    format:
+    - mermaid: Mermaid 다이어그램 코드
+    - d3: D3.js용 JSON (nodes + links)
+    - cytoscape: Cytoscape.js용 JSON
+    """
+    try:
+        graph = get_graph_store()
+
+        # 문서 참조 관계 조회
+        refs = graph.get_document_references(doc_id)
+        if not refs:
+            raise HTTPException(404, f"문서를 찾을 수 없습니다: {doc_id}")
+
+        doc = refs.get("document", {})
+        references = refs.get("references_to", [])
+        referenced_by = refs.get("referenced_by", [])
+
+        if format == "mermaid":
+            # Mermaid 다이어그램 생성
+            lines = ["graph LR"]
+            safe_doc_id = doc_id.replace("-", "_")
+            title = doc.get("title", doc_id).replace('"', "'")
+
+            lines.append(f'    Main[\"{doc_id}<br/>({title})\"]:::mainNode')
+
+            # 참조하는 문서들
+            for ref in references:
+                ref_id = ref.get("doc_id", "").replace("-", "_")
+                ref_title = ref.get("title", "").replace('"', "'")
+                if ref_id:
+                    lines.append(f'    Main --> {ref_id}[\"{ref.get("doc_id", "")}<br/>({ref_title})\"]')
+
+            # 참조받는 문서들
+            for cited in referenced_by:
+                cited_id = cited.get("doc_id", "").replace("-", "_")
+                cited_title = cited.get("title", "").replace('"', "'")
+                if cited_id:
+                    lines.append(f'    {cited_id}[\"{cited.get("doc_id", "")}<br/>({cited_title})\"] --> Main')
+
+            lines.append("    classDef mainNode fill:#f96,stroke:#333,stroke-width:4px;")
+
+            return {
+                "format": "mermaid",
+                "doc_id": doc_id,
+                "code": "\n".join(lines)
+            }
+
+        elif format == "d3":
+            # D3.js용 JSON 생성
+            nodes = []
+            links = []
+
+            # 메인 노드
+            nodes.append({
+                "id": doc_id,
+                "label": doc.get("title", doc_id),
+                "type": "main",
+                "group": 0
+            })
+
+            # 참조하는 문서들 (상위)
+            for idx, ref in enumerate(references):
+                ref_id = ref.get("doc_id")
+                if ref_id:
+                    nodes.append({
+                        "id": ref_id,
+                        "label": ref.get("title", ref_id),
+                        "type": "reference",
+                        "group": 1
+                    })
+                    links.append({
+                        "source": doc_id,
+                        "target": ref_id,
+                        "type": "references"
+                    })
+
+            # 참조받는 문서들 (하위)
+            for idx, cited in enumerate(referenced_by):
+                cited_id = cited.get("doc_id")
+                if cited_id:
+                    nodes.append({
+                        "id": cited_id,
+                        "label": cited.get("title", cited_id),
+                        "type": "cited_by",
+                        "group": 2
+                    })
+                    links.append({
+                        "source": cited_id,
+                        "target": doc_id,
+                        "type": "cites"
+                    })
+
+            return {
+                "format": "d3",
+                "doc_id": doc_id,
+                "data": {
+                    "nodes": nodes,
+                    "links": links
+                }
+            }
+
+        elif format == "cytoscape":
+            # Cytoscape.js용 JSON 생성
+            elements = []
+
+            # 메인 노드
+            elements.append({
+                "data": {
+                    "id": doc_id,
+                    "label": doc.get("title", doc_id),
+                    "type": "main"
+                },
+                "classes": "main-node"
+            })
+
+            # 참조하는 문서들
+            for ref in references:
+                ref_id = ref.get("doc_id")
+                if ref_id:
+                    elements.append({
+                        "data": {
+                            "id": ref_id,
+                            "label": ref.get("title", ref_id),
+                            "type": "reference"
+                        }
+                    })
+                    elements.append({
+                        "data": {
+                            "source": doc_id,
+                            "target": ref_id,
+                            "type": "references"
+                        }
+                    })
+
+            # 참조받는 문서들
+            for cited in referenced_by:
+                cited_id = cited.get("doc_id")
+                if cited_id:
+                    elements.append({
+                        "data": {
+                            "id": cited_id,
+                            "label": cited.get("title", cited_id),
+                            "type": "cited_by"
+                        }
+                    })
+                    elements.append({
+                        "data": {
+                            "source": cited_id,
+                            "target": doc_id,
+                            "type": "cites"
+                        }
+                    })
+
+            return {
+                "format": "cytoscape",
+                "doc_id": doc_id,
+                "elements": elements
+            }
+
+        else:
+            raise HTTPException(400, f"지원하지 않는 포맷입니다: {format}")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"시각화 데이터 생성 실패: {str(e)}")
+
+
+@app.get("/graph/impact/{doc_id}")
+def graph_get_impact_analysis(doc_id: str):
+    """
+    문서 변경 시 영향 분석
+    - 이 문서가 변경되면 영향을 받는 다른 문서들과 조항들
+    """
+    try:
+        graph = get_graph_store()
+
+        # 영향 분석 실행
+        impacts = graph.get_impact_analysis(doc_id)
+
+        if not impacts:
+            return {
+                "doc_id": doc_id,
+                "impacts": [],
+                "count": 0,
+                "message": "이 문서의 변경으로 영향받는 문서가 없습니다."
+            }
+
+        # 문서별로 그룹화
+        impact_by_doc = {}
+        for impact in impacts:
+            src_doc = impact.get("source_doc_id")
+            if src_doc not in impact_by_doc:
+                impact_by_doc[src_doc] = {
+                    "doc_id": src_doc,
+                    "sections": []
+                }
+
+            impact_by_doc[src_doc]["sections"].append({
+                "section_id": impact.get("citing_section"),
+                "section_title": impact.get("citing_section_title", ""),
+                "context": impact.get("context", "")
+            })
+
+        return {
+            "doc_id": doc_id,
+            "impacts": list(impact_by_doc.values()),
+            "count": len(impact_by_doc),
+            "total_sections": len(impacts)
+        }
+
+    except Exception as e:
+        raise HTTPException(500, f"영향 분석 실패: {str(e)}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════

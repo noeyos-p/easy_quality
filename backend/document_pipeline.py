@@ -695,6 +695,8 @@ def process_document(
             "doc_title": doc_title,
             "version": version or "1.0",
             "total_clauses": len(clauses),
+            "markdown": markdown,  # 원본 마크다운 추가
+            "clauses": clauses,  # 조항 구조 추가
             "errors": []
         }
 
