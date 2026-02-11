@@ -20,6 +20,8 @@ sentence-transformers
 pdfplumber
 pymupdf
 python-docx
+xhtml2pdf
+markdown
 
 # === LangChain + LangGraph ===
 langchain
