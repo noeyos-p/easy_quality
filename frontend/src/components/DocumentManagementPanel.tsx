@@ -24,27 +24,20 @@ interface Version {
   created_at: string;
 }
 
-interface DocumentContent {
-  doc_name: string;
-  version: string;
-  content: string;
-  chunk_count: number;
-}
 
 interface DocumentManagementPanelProps {
   onDocumentSelect?: (docId: string, content?: string) => void;
 }
 
 export default function DocumentManagementPanel({ onDocumentSelect }: DocumentManagementPanelProps) {
-  const [documents, setDocuments] = useState<Document[]>([]);
   const [groupedDocuments, setGroupedDocuments] = useState<Map<string, DocumentGroup>>(new Map());
   const [selectedDoc, setSelectedDoc] = useState<string | null>(null);
   const [versions, setVersions] = useState<Version[]>([]);
-  const [documentContent, setDocumentContent] = useState<DocumentContent | null>(null);
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<string>('');
+  const [isDeleting, setIsDeleting] = useState(false);
 
   // 문서 목록 로드
   useEffect(() => {
@@ -57,7 +50,6 @@ export default function DocumentManagementPanel({ onDocumentSelect }: DocumentMa
       const data = await response.json();
       console.log('🔍 [Documents API Response]', data);
       const docs = data.documents || [];
-      setDocuments(docs);
 
       // 문서를 카테고리별로 그룹화
       const groups = new Map<string, DocumentGroup>();
@@ -92,24 +84,29 @@ export default function DocumentManagementPanel({ onDocumentSelect }: DocumentMa
       const newGroups = new Map(prev);
       const group = newGroups.get(category);
       if (group) {
-        group.expanded = !group.expanded;
+        newGroups.set(category, { ...group, expanded: !group.expanded });
       }
       return newGroups;
     });
   };
 
-  // 문서 선택 시 버전 목록 로드
+  // 문서 클릭 시 최신 버전 내용 바로 표시
   const handleDocumentSelect = async (docName: string) => {
     setSelectedDoc(docName);
-    setDocumentContent(null);
 
     try {
-      const response = await fetch(`${API_URL}/rag/document/${docName}/versions`);
-      const data = await response.json();
-      setVersions(data.versions || []);
+      const versionResponse = await fetch(`${API_URL}/rag/document/${docName}/versions`);
+      const versionData = await versionResponse.json();
+      const fetchedVersions: Version[] = versionData.versions || [];
+      setVersions(fetchedVersions);
+
+      // 최신 버전(첫 번째) 내용 자동 표시
+      const latestVersion = fetchedVersions[0]?.version;
+      await handleViewDocument(docName, latestVersion);
     } catch (error) {
-      console.error('버전 목록 조회 실패:', error);
+      console.error('문서 로드 실패:', error);
       setVersions([]);
+      await handleViewDocument(docName);
     }
   };
 
@@ -122,9 +119,8 @@ export default function DocumentManagementPanel({ onDocumentSelect }: DocumentMa
 
       const response = await fetch(url);
       const data = await response.json();
-      setDocumentContent(data);
 
-      // App.tsx의 뷰어에도 표시 (content 전달하지 않아서 chunks 구조화 로직 실행)
+      // App.tsx의 뷰어에 표시
       if (onDocumentSelect) {
         onDocumentSelect(docName);
       }
@@ -133,33 +129,34 @@ export default function DocumentManagementPanel({ onDocumentSelect }: DocumentMa
     }
   };
 
-  // 문서 삭제
-  const handleDeleteDocument = async (docName: string) => {
-    if (!confirm(`"${docName}" 문서를 삭제하시겠습니까?`)) {
+
+  // 문서 삭제 (RDB + Weaviate + Neo4j)
+  const handleDeleteDocument = async () => {
+    if (!selectedDoc) return;
+    if (!confirm(`"${selectedDoc}" 문서를 모든 DB에서 삭제하시겠습니까?\n(RDB, VectorDB, GraphDB 전체 삭제)`)) {
       return;
     }
 
+    setIsDeleting(true);
     try {
       const response = await fetch(`${API_URL}/rag/document`, {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ doc_name: docName, collection: 'documents' }),
+        body: JSON.stringify({ doc_name: selectedDoc, collection: 'documents', delete_from_neo4j: true }),
       });
 
       if (response.ok) {
-        alert('문서가 삭제되었습니다.');
+        alert(`"${selectedDoc}" 삭제 완료`);
+        setSelectedDoc(null);
+        setVersions([]);
         fetchDocuments();
-        if (selectedDoc === docName) {
-          setSelectedDoc(null);
-          setVersions([]);
-          setDocumentContent(null);
-        }
       } else {
-        alert('문서 삭제 실패');
+        alert('삭제 실패');
       }
-    } catch (error) {
-      console.error('문서 삭제 실패:', error);
-      alert('문서 삭제 중 오류 발생');
+    } catch (_error) {
+      alert('삭제 중 오류 발생');
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -185,7 +182,7 @@ export default function DocumentManagementPanel({ onDocumentSelect }: DocumentMa
       });
 
       if (response.ok) {
-        const result = await response.json();
+        await response.json();
         setUploadProgress('🟢 업로드 완료!');
         setTimeout(() => {
           setIsUploadModalOpen(false);
@@ -208,9 +205,19 @@ export default function DocumentManagementPanel({ onDocumentSelect }: DocumentMa
     <div className="document-management-panel">
       <div className="panel-header">
         <h2>문서 관리</h2>
-        <button className="btn-upload" onClick={() => setIsUploadModalOpen(true)}>
-          + 업로드
-        </button>
+        <div className="header-actions">
+          <button
+            className="btn-delete-doc"
+            onClick={handleDeleteDocument}
+            disabled={!selectedDoc || isDeleting}
+            title={selectedDoc ? `"${selectedDoc}" 삭제` : '문서를 선택하세요'}
+          >
+            {isDeleting ? '삭제 중...' : '- 삭제'}
+          </button>
+          <button className="btn-upload" onClick={() => setIsUploadModalOpen(true)}>
+            + 업로드
+          </button>
+        </div>
       </div>
 
       <div className="panel-content">
@@ -244,22 +251,6 @@ export default function DocumentManagementPanel({ onDocumentSelect }: DocumentMa
                             <span className="doc-chunk-count">({doc.chunk_count}개)</span>
                           )}
                         </div>
-                        <div className="document-actions">
-                          <button
-                            className="btn-icon"
-                            onClick={() => handleViewDocument(doc.doc_id)}
-                            title="내용 보기"
-                          >
-                            보기
-                          </button>
-                          <button
-                            className="btn-icon btn-delete"
-                            onClick={() => handleDeleteDocument(doc.doc_id)}
-                            title="삭제"
-                          >
-                            삭제
-                          </button>
-                        </div>
                       </div>
                     ))}
                   </div>
@@ -291,20 +282,6 @@ export default function DocumentManagementPanel({ onDocumentSelect }: DocumentMa
           </div>
         )}
 
-        {/* 문서 내용 */}
-        {documentContent && (
-          <div className="document-content">
-            <h3>
-              {documentContent.doc_name} (v{documentContent.version})
-            </h3>
-            <div className="content-stats">
-              <span>청크: {documentContent.chunk_count}개</span>
-            </div>
-            <div className="content-text">
-              <pre>{documentContent.content.substring(0, 2000)}...</pre>
-            </div>
-          </div>
-        )}
       </div>
 
       {/* 업로드 모달 */}

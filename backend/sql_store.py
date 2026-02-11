@@ -146,6 +146,26 @@ class SQLStore:
     # document 테이블 관련 메서드
     # ═══════════════════════════════════════════════════════════════════════════
 
+    def delete_document_by_name(self, doc_name: str) -> bool:
+        """문서명으로 모든 버전 삭제 (chunk는 CASCADE로 자동 삭제)"""
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT id FROM doc_name WHERE name = %s", (doc_name,))
+                    row = cur.fetchone()
+                    if not row:
+                        print(f" [SQLStore] 문서 없음: {doc_name}")
+                        return False
+                    doc_name_id = row[0]
+                    cur.execute("DELETE FROM document WHERE doc_name_id = %s", (doc_name_id,))
+                    cur.execute("DELETE FROM doc_name WHERE id = %s", (doc_name_id,))
+                    conn.commit()
+            print(f" [SQLStore] 문서 삭제 완료: {doc_name}")
+            return True
+        except Exception as e:
+            print(f" [SQLStore] 문서 삭제 실패: {e}")
+            return False
+
     def save_document(
         self,
         doc_name: str,
@@ -164,23 +184,43 @@ class SQLStore:
         if not doc_name_id:
             return None
 
-        # 2. document 저장
-        insert_query = """
-            INSERT INTO document (doc_name_id, content, doc_type, version, status, modified_at, approved_at, effective_at, deprecated_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-            RETURNING id;
-        """
-
+        # 2. 같은 doc_name + version이 이미 있으면 덮어쓰기(UPDATE), 없으면 새로 삽입(INSERT)
         try:
             with self._get_connection() as conn:
                 with conn.cursor() as cur:
-                    cur.execute(insert_query, (
-                        doc_name_id, content, doc_type, version, status,
-                        modified_at, approved_at, effective_at, deprecated_at
-                    ))
-                    doc_id = cur.fetchone()[0]
-                    conn.commit()
-            print(f" [SQLStore] 문서 저장 성공: {doc_name} v{version} [{status}] (ID: {doc_id})")
+                    cur.execute(
+                        "SELECT id FROM document WHERE doc_name_id = %s AND version = %s",
+                        (doc_name_id, version)
+                    )
+                    existing = cur.fetchone()
+
+                    if existing:
+                        cur.execute(
+                            """
+                            UPDATE document
+                            SET content = %s, doc_type = %s, status = %s, modified_at = NOW()
+                            WHERE doc_name_id = %s AND version = %s
+                            RETURNING id;
+                            """,
+                            (content, doc_type, status, doc_name_id, version)
+                        )
+                        doc_id = cur.fetchone()[0]
+                        conn.commit()
+                        print(f" [SQLStore] 문서 덮어쓰기: {doc_name} v{version} (ID: {doc_id})")
+                    else:
+                        cur.execute(
+                            """
+                            INSERT INTO document (doc_name_id, content, doc_type, version, status, modified_at, approved_at, effective_at, deprecated_at)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            RETURNING id;
+                            """,
+                            (doc_name_id, content, doc_type, version, status,
+                             modified_at, approved_at, effective_at, deprecated_at)
+                        )
+                        doc_id = cur.fetchone()[0]
+                        conn.commit()
+                        print(f" [SQLStore] 문서 저장 성공: {doc_name} v{version} (ID: {doc_id})")
+
             return doc_id
         except Exception as e:
             print(f" [SQLStore] 문서 저장 실패: {e}")
