@@ -483,8 +483,8 @@ function App() {
                       ctx.textBaseline = 'top'
                       ctx.fillText(label, node.x!, node.y! + radius + 5)
                     }}
-                    linkColor={() => '#3e3e42'}                                                       
-                    linkWidth={1} 
+                    linkColor={() => '#3e3e42'}
+                    linkWidth={1}
                     backgroundColor="#1F1F1F"
                     width={graphSize.width || 600}
                     height={graphSize.height || 500}
@@ -510,7 +510,64 @@ function App() {
                 <h2>{selectedDocument}</h2>
               </div>
               <div className="document-body">
-                <pre className="document-text-plain">{documentContent}</pre>
+                {(() => {
+                  if (!documentContent) return null;
+
+                  // PAGE 마커를 기준으로 분할
+                  // 예: "내용 <!-- PAGE:1 --> 내용 <!-- PAGE:2 -->"
+                  const pages = documentContent.split(/<!-- PAGE:\d+ -->/);
+                  // split 결과 첫 번째 요소가 빈 문자열일 수 있음 (문서 맨 앞에 마커가 있는 경우)
+                  const filteredPages = pages.filter((page, index) => index > 0 || page.trim() !== '');
+
+                  return (
+                    <div className="document-pages-container">
+                      {filteredPages.map((page, index) => (
+                        <div key={index} className="document-page">
+                          <div className="document-page-content">
+                            {(() => {
+                              let currentDepth = 0;
+                              return page.split('\n').map((line, lineIdx) => {
+                                const trimmedLine = line.trim();
+                                if (trimmedLine === '') {
+                                  return <div key={lineIdx} className="line-spacer" />;
+                                }
+
+                                // 섹션 번호 추출 (예: 1, 1.1, 1.1.1)
+                                const sectionMatch = trimmedLine.match(/^(\d+(?:\.\d+)*)\.?\s+/);
+                                if (sectionMatch) {
+                                  const parts = sectionMatch[1].split('.');
+                                  currentDepth = parts.length - 1;
+                                }
+
+                                const depthStyle = { paddingLeft: `${currentDepth * 32}px` };
+
+                                // 대항목 (depth 0)
+                                if (currentDepth === 0 && sectionMatch) {
+                                  return <div key={lineIdx} className="section-header-main" style={depthStyle}>{trimmedLine}</div>;
+                                }
+
+                                // 중항목 이상 (depth > 0)
+                                if (sectionMatch) {
+                                  return <div key={lineIdx} className="section-header-sub" style={depthStyle}>{trimmedLine}</div>;
+                                }
+
+                                // 구분선
+                                if (/^={10,}/.test(trimmedLine)) {
+                                  return <div key={lineIdx} className="section-divider">{trimmedLine}</div>;
+                                }
+
+                                return <div key={lineIdx} className="section-line" style={depthStyle}>{line}</div>;
+                              });
+                            })()}
+                          </div>
+                          <div className="page-footer">
+                            <span className="page-number">{index + 1} / {filteredPages.length}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })()}
               </div>
             </div>
           ) : (

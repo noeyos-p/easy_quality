@@ -171,28 +171,98 @@ body {
 }
 
 .document-body {
-  padding: 24px;
+  padding: 40px 20px;
+  background-color: #e0e0e0;
+  /* 연한 회색 배경으로 페이지 강조 */
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 30px;
 }
 
-.document-text {
-  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
-  font-size: 13px;
-  line-height: 1.6;
-  color: var(--text-primary);
+.document-pages-container {
+  width: 100%;
+  max-width: 900px;
+  display: flex;
+  flex-direction: column;
+  gap: 40px;
+}
+
+.document-page {
+  background-color: #ffffff;
+  color: #333333;
+  padding: 80px 70px;
+  /* 패딩을 조금 더 넉넉히 */
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.15);
+  min-height: 1100px;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  border-radius: 4px;
+}
+
+.document-page-content {
+  flex: 1;
+  font-family: 'Inter', 'Noto Sans KR', 'Malgun Gothic', sans-serif;
+  color: #2c3e50;
   white-space: pre-wrap;
   word-wrap: break-word;
-  margin: 0;
-  background: var(--bg-darker);
-  padding: 16px;
-  border-radius: 4px;
-  overflow-x: auto;
 }
 
-.placeholder-text {
-  font-size: 14px;
-  color: var(--text-secondary);
-  margin-bottom: 12px;
-  line-height: 1.6;
+.section-line {
+  font-size: 15px;
+  line-height: 1.8;
+  margin-bottom: 6px;
+  transition: padding-left 0.2s ease;
+}
+
+.section-header-main {
+  font-size: 19px;
+  font-weight: 700;
+  margin-top: 40px;
+  margin-bottom: 20px;
+  color: #1a1a1a;
+  border-bottom: 2px solid #e9ecef;
+  padding-bottom: 10px;
+  transition: padding-left 0.2s ease;
+}
+
+.section-header-sub {
+  font-size: 15px;
+  /* 일반 텍스트와 동일한 크기 또는 약간 조절 */
+  font-weight: 400;
+  /* 볼드 해제 */
+  /* depth 1 이상 볼드 해제 유지 */
+  margin-top: 18px;
+  margin-bottom: 6px;
+  color: #2c3e50;
+  /* 일반 텍스트와 동일하거나 유사한 색상 */
+  transition: padding-left 0.2s ease;
+}
+
+.line-spacer {
+  height: 12px;
+}
+
+.section-divider {
+  color: #bdc3c7;
+  letter-spacing: 2px;
+  margin: 16px 0;
+  font-family: monospace;
+}
+
+.page-footer {
+  margin-top: 60px;
+  padding-top: 20px;
+  border-top: 1px solid #f8f9fa;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.page-number {
+  font-size: 13px;
+  color: #95a5a6;
+  font-weight: 500;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -609,6 +679,7 @@ body {
    ═══════════════════════════════════════════════════════════════════════════ */
 
 @media (max-width: 1400px) {
+
   .document-management-panel,
   .document-visualization-panel {
     width: 300px;
