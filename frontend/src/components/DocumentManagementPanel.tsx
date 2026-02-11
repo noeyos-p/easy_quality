@@ -1,4 +1,6 @@
 import { useState, useEffect } from 'react';
+import docLargeIcon from '../assets/icons/document-manage.svg'; // Vector 21 - SOP, WI
+import docSmallIcon from '../assets/icons/document.svg';        // Vector 20 - FRM, 기타
 
 const API_URL = 'http://localhost:8000';
 
@@ -245,7 +247,12 @@ export default function DocumentManagementPanel({ onDocumentSelect }: DocumentMa
                   className="flex items-center gap-1.5 py-1.5 px-2 cursor-pointer rounded transition-colors duration-200 select-none hover:bg-dark-hover"
                   onClick={() => toggleGroup(group.category)}
                 >
-                  <span className="text-[14px]">{group.expanded ? '📂' : '📁'}</span>
+                  <img
+                    src={docLargeIcon}
+                    alt="folder"
+                    className="w-4 h-4 flex-shrink-0"
+                    style={{ filter: 'brightness(0) invert(0.75)' }}
+                  />
                   <span className="flex-1 text-[13px] font-semibold text-txt-primary">{group.category}</span>
                   <span className="text-[11px] text-txt-secondary">({group.documents.length})</span>
                 </div>
@@ -268,7 +275,12 @@ export default function DocumentManagementPanel({ onDocumentSelect }: DocumentMa
                           className="flex items-center gap-1.5 text-txt-primary text-[12px] flex-1"
                           onClick={() => handleDocumentSelect(doc.doc_id)}
                         >
-                          <span className="text-[12px] opacity-70">📄</span>
+                          <img
+                            src={docSmallIcon}
+                            alt="document"
+                            className="w-3.5 h-3.5 flex-shrink-0"
+                            style={{ filter: 'brightness(0) invert(0.7)' }}
+                          />
                           <span>{doc.doc_id}</span>
                           {doc.chunk_count && (
                             <span className="text-txt-secondary text-[11px] ml-1">({doc.chunk_count}개)</span>
