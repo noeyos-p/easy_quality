@@ -82,6 +82,7 @@ function App() {
   const [showSuggestions, setShowSuggestions] = useState(false)
   const [suggestionIndex, setSuggestionIndex] = useState(0)
   const [mentionTriggerPos, setMentionTriggerPos] = useState<number | null>(null)
+  const [selectedDocs, setSelectedDocs] = useState<string[]>([])
   // 그래프 시각화 상태
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [graphData, setGraphData] = useState<{ nodes: any[], links: any[] } | null>(null)
@@ -225,7 +226,9 @@ function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          message: messageToSend,
+          message: selectedDocs.length > 0
+            ? `[Selected Documents: ${selectedDocs.join(', ')}]\n${messageToSend}`
+            : messageToSend,
           session_id: sessionId,
           llm_model: 'gpt-4o-mini', // OpenAI 모델
         }),
@@ -274,6 +277,7 @@ function App() {
       }])
     } finally {
       setIsLoading(false)
+      setSelectedDocs([]) // 전송 후 선택된 문서 초기화
     }
   }
 
@@ -330,11 +334,22 @@ function App() {
       const currentPos = input?.selectionStart || mentionTriggerPos + 1
       const afterAt = inputMessage.substring(currentPos)
 
-      const newValue = before + name + ' ' + (afterAt.startsWith(' ') ? afterAt.substring(1) : afterAt)
+      // 입력된 텍스트에서 @멘션 부분을 제거하고 나머지만 유지
+      const newValue = before + (afterAt.startsWith(' ') ? afterAt.substring(1) : afterAt)
       setInputMessage(newValue)
+
+      // 선택된 문서 목록에 추가 (중복 방지)
+      if (!selectedDocs.includes(name)) {
+        setSelectedDocs(prev => [...prev, name])
+      }
+
       setShowSuggestions(false)
       setMentionTriggerPos(null)
     }
+  }
+
+  const removeSelectedDoc = (docId: string) => {
+    setSelectedDocs(prev => prev.filter(id => id !== docId))
   }
 
   const toggleSection = (section: string) => {
@@ -749,11 +764,26 @@ function App() {
             {/* 하단 입력 영역 */}
             <div className="agent-input-area">
               <div className="input-wrapper">
+                {selectedDocs.length > 0 && (
+                  <div className="selected-docs-tags">
+                    {selectedDocs.map(docId => (
+                      <div key={docId} className="doc-tag">
+                        <span className="doc-tag-name">{docId}</span>
+                        <button
+                          className="doc-tag-remove"
+                          onClick={() => removeSelectedDoc(docId)}
+                        >
+                          ×
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
                 <textarea
                   value={inputMessage}
                   onChange={handleInputChange}
                   onKeyDown={handleKeyPress}
-                  placeholder="Ask the Agent..."
+                  placeholder={selectedDocs.length > 0 ? "" : "Ask the Agent..."}
                   className="agent-input"
                   rows={1}
                 />
