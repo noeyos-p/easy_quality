@@ -45,7 +45,8 @@ def generate_mermaid_flow(doc_id: str, refs: dict, impact_data: list = None) -> 
             section = imp.get("citing_section", "")
             lines.append(f'    Main -- "{section} 조항에서 언급" --> {src_id}')
 
-    lines.append("    classDef mainNode fill:#f96,stroke:#333,stroke-width:4px;")
+    lines.append("    classDef mainNode fill:#f96,stroke:#333,stroke-width:4px,color:#000;")
+    lines.append("    classDef default fill:#eee,stroke:#333,color:#000;")
     return "\n".join(lines)
 
 @traceable(name="graph_agent", run_type="chain")

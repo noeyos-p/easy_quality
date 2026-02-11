@@ -664,6 +664,16 @@ def list_documents(collection: str = "documents"):
         return {"documents": [], "collection": collection}
 
 
+@app.get("/rag/doc-names")
+def list_doc_names():
+    """모든 문서 이름 목록 조회 (RDB doc_name 테이블)"""
+    try:
+        return {"doc_names": sql_store.list_doc_names()}
+    except Exception as e:
+        print(f"문서 이름 목록 조회 실패: {e}")
+        return {"doc_names": []}
+
+
 @app.get("/rag/document/{doc_name}/versions")
 def get_document_versions(doc_name: str):
     """문서 버전 목록 조회"""
@@ -1011,7 +1021,8 @@ def graph_get_visualization(doc_id: str, format: str = "mermaid"):
                 if cited_id:
                     lines.append(f'    {cited_id}[\"{cited.get("doc_id", "")}<br/>({cited_title})\"] --> Main')
 
-            lines.append("    classDef mainNode fill:#f96,stroke:#333,stroke-width:4px;")
+            lines.append("    classDef mainNode fill:#f96,stroke:#333,stroke-width:4px,color:#000;")
+            lines.append("    classDef default fill:#eee,stroke:#333,color:#000;")
 
             return {
                 "format": "mermaid",
