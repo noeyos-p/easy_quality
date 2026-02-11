@@ -197,30 +197,36 @@ function App() {
   const sendMessage = async () => {
     if (!inputMessage.trim() || isLoading) return
 
+    // 상태 스냅샷을 만들어 동기적으로 사용 (레이스 컨디션 방지)
+    const currentInput = inputMessage
+    const currentDocs = [...selectedDocs]
+
+    const formattedContent = currentDocs.length > 0
+      ? `${currentDocs.map(d => `@${d}`).join(' ')} ${currentInput}`
+      : currentInput
+
     const userMessage: ChatMessage = {
       role: 'user',
-      content: inputMessage,
+      content: formattedContent,
       timestamp: new Date(),
     }
 
     setMessages(prev => [...prev, userMessage])
-    const messageToSend = inputMessage
     setInputMessage('')
     setIsLoading(true)
 
     const startTime = Date.now()
 
     try {
-      // 이제 RAG/일반 분기 없이 오직 Agent Chat만 호출
       const response = await fetch(`${API_URL}/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          message: selectedDocs.length > 0
-            ? `[Selected Documents: ${selectedDocs.join(', ')}]\n${messageToSend}`
-            : messageToSend,
+          message: currentDocs.length > 0
+            ? `[Selected Documents: ${currentDocs.join(', ')}]\n${currentInput}`
+            : currentInput,
           session_id: sessionId,
-          llm_model: 'gpt-4o-mini', // OpenAI 모델
+          llm_model: 'gpt-4o-mini',
         }),
       })
 
@@ -624,7 +630,45 @@ function App() {
                 <div key={index} className={`agent-conversation ${msg.role}`}>
                   {msg.role === 'user' ? (
                     <div className="user-input-display">
-                      <span className="user-input-text">{msg.content}</span>
+                      <div className="user-input-text">
+                        <ReactMarkdown
+                          remarkPlugins={[remarkGfm]}
+                          components={{
+                            p({ children }) {
+                              const docPattern = /(EQ-(?:SOP|WI)-\d{5}(?:\([\d.,\s]+\))?)/g;
+                              const processText = (text: string) => {
+                                const parts = text.split(docPattern);
+                                return parts.map((part, i) => {
+                                  if (docPattern.test(part)) {
+                                    const docId = part.split('(')[0].replace(/^@/, '');
+                                    return (
+                                      <span
+                                        key={i}
+                                        className="doc-link"
+                                        onClick={() => handleDocumentSelect(docId)}
+                                      >
+                                        {part}
+                                      </span>
+                                    );
+                                  }
+                                  return part;
+                                });
+                              };
+                              const recurse = (node: any): any => {
+                                if (typeof node === 'string') return processText(node);
+                                if (Array.isArray(node)) return node.map(recurse);
+                                if (node?.props?.children) {
+                                  return { ...node, props: { ...node.props, children: recurse(node.props.children) } };
+                                }
+                                return node;
+                              };
+                              return <p>{recurse(children)}</p>;
+                            }
+                          }}
+                        >
+                          {msg.content}
+                        </ReactMarkdown>
+                      </div>
                     </div>
                   ) : (
                     <div className="assistant-response">
