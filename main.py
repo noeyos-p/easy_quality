@@ -12,19 +12,18 @@ RAG 챗봇 API v14.0 + Agent (OpenAI)
 from dotenv import load_dotenv
 load_dotenv()
 
-from io import BytesIO
-from fastapi.responses import Response
-
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Literal
 from contextlib import asynccontextmanager
 import torch
 import time
-import uuid
 import re
+import uuid
+import json
+from io import BytesIO
 
 from backend.sql_store import SQLStore
 sql_store = SQLStore()
@@ -263,6 +262,40 @@ def md_to_pdf_binary(md_text: str) -> bytes:
     except Exception as e:
         print(f"⚠ PDF 변환 실패: {e}")
         raise HTTPException(500, f"PDF 변환 중 오류가 발생했습니다: {str(e)}")
+
+def md_to_docx_binary(md_text: str, title: str) -> bytes:
+    """마크다운을 Word(.docx) 바이너리로 변환 (간단한 구조)"""
+    try:
+        from docx import Document
+        from docx.shared import Pt
+        
+        doc = Document()
+        doc.add_heading(title, 0)
+        
+        # 마크다운을 줄 단위로 분리하여 간단하게 구현 (정밀한 라이브러리 대신 직접 처리)
+        lines = md_text.split('\n')
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            
+            if line.startswith('# '):
+                doc.add_heading(line[2:], level=1)
+            elif line.startswith('## '):
+                doc.add_heading(line[3:], level=2)
+            elif line.startswith('### '):
+                doc.add_heading(line[4:], level=3)
+            elif line.startswith('- ') or line.startswith('* '):
+                doc.add_paragraph(line[2:], style='List Bullet')
+            else:
+                doc.add_paragraph(line)
+        
+        out = BytesIO()
+        doc.save(out)
+        return out.getvalue()
+    except Exception as e:
+        print(f"⚠ Word 변환 실패: {e}")
+        raise HTTPException(500, f"Word 변환 중 오류가 발생했습니다: {str(e)}")
 
 app = FastAPI(title="RAG Chatbot API", version="9.2.0", lifespan=lifespan)
 
@@ -1005,23 +1038,48 @@ def get_document_metadata(doc_name: str, version: Optional[str] = None):
 
 
 @app.get("/rag/document/download/{doc_name}")
-async def download_document(doc_name: str, version: Optional[str] = None):
-    """문서를 PDF 파일로 다운로드"""
+async def download_document(
+    doc_name: str, 
+    version: Optional[str] = None,
+    format: Literal["pdf", "docx", "md"] = "pdf"
+):
+    """문서를 다양한 파일 형식으로 다운로드"""
     try:
         # DB에서 문서 조회 (버전 명시 없으면 최신본)
         doc = sql_store.get_document_by_name(doc_name, version)
         if not doc:
             raise HTTPException(404, "문서를 찾을 수 없습니다.")
             
-        content = doc["content"]
+        content = doc["content"] # text/markdown 원본
         doc_type = doc["doc_type"]
         ver = doc["version"]
         
         # 파일명 구성 (공백 제거)
         safe_filename = doc_name.replace(" ", "_").replace("/", "_")
+        
+        # 1. 마크다운(.md) 형식 요청
+        if format == "md":
+            filename = f"{safe_filename}_v{ver}.md"
+            return Response(
+                content=content.encode('utf-8'),
+                media_type="text/markdown",
+                headers={"Content-Disposition": f"attachment; filename={filename}"}
+            )
+            
+        # 2. 워드(.docx) 형식 요청
+        if format == "docx":
+            filename = f"{safe_filename}_v{ver}.docx"
+            docx_bytes = md_to_docx_binary(content, doc_name)
+            return Response(
+                content=docx_bytes,
+                media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                headers={"Content-Disposition": f"attachment; filename={filename}"}
+            )
+            
+        # 3. PDF 형식 요청 (기존 로직 유지)
         filename = f"{safe_filename}_v{ver}.pdf"
         
-        # 1. 이미 PDF인 경우
+        # 3-1. 이미 PDF인 경우
         if doc_type == "pdf" and isinstance(content, bytes):
             return Response(
                 content=content,
@@ -1029,7 +1087,7 @@ async def download_document(doc_name: str, version: Optional[str] = None):
                 headers={"Content-Disposition": f"attachment; filename={filename}"}
             )
             
-        # 2. 텍스트(마크다운)인 경우 PDF로 변환
+        # 3-2. 텍스트(마크다운)인 경우 PDF로 변환
         pdf_bytes = md_to_pdf_binary(content)
         return Response(
             content=pdf_bytes,
