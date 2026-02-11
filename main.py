@@ -773,37 +773,46 @@ def get_document_metadata(doc_name: str, version: Optional[str] = None):
 @app.delete("/rag/document")
 def delete_document(request: DeleteDocRequest):
     """
-     문서 삭제 (Weaviate + Neo4j 동시 삭제)
+    문서 삭제 (RDB + Weaviate + Neo4j 전체 삭제)
     """
-    result = {"chromadb": None, "neo4j": None}
-    
-    # 1. Weaviate 삭제
-    chroma_result = vector_store.delete_by_doc_name(
-        doc_name=request.doc_name,
-        collection_name=request.collection
-    )
-    result["weaviate"] = chroma_result
-    
-    # 2. Neo4j 삭제 (옵션)
-    if request.delete_from_neo4j:
-        try:
-            graph = get_graph_store()
-            if graph.test_connection():
-                # doc_name에서 doc_id 추출 시도
-                import re
-                sop_match = re.search(r'(EQ-SOP-\d+)', request.doc_name, re.IGNORECASE)
-                if sop_match:
-                    doc_id = sop_match.group(1).upper()
-                    neo4j_result = graph.delete_document(doc_id)
-                    result["neo4j"] = {"success": True, "doc_id": doc_id, "deleted": neo4j_result}
-                else:
-                    result["neo4j"] = {"success": False, "message": "SOP ID를 추출할 수 없음"}
-        except Exception as e:
-            result["neo4j"] = {"success": False, "error": str(e)}
-    
-    # 전체 성공 여부
-    success = chroma_result.get("success", False)
-    
+    result = {"rdb": None, "weaviate": None, "neo4j": None}
+
+    # 1. RDB (PostgreSQL) 삭제
+    try:
+        rdb_ok = sql_store.delete_document_by_name(request.doc_name)
+        result["rdb"] = {"success": rdb_ok}
+    except Exception as e:
+        result["rdb"] = {"success": False, "error": str(e)}
+
+    # 2. Weaviate (Vector DB) 삭제
+    try:
+        weaviate_result = vector_store.delete_by_doc_name(
+            doc_name=request.doc_name,
+            collection_name=request.collection
+        )
+        result["weaviate"] = weaviate_result
+    except Exception as e:
+        result["weaviate"] = {"success": False, "error": str(e)}
+
+    # 3. Neo4j (Graph DB) 삭제
+    try:
+        graph = get_graph_store()
+        if graph.test_connection():
+            # EQ-SOP-xxxxx, EQ-WI-xxxxx, EQ-FRM-xxxxx 패턴 모두 처리
+            doc_id_match = re.search(r'(EQ-(?:SOP|WI|FRM)-\d+)', request.doc_name, re.IGNORECASE)
+            if doc_id_match:
+                doc_id = doc_id_match.group(1).upper()
+                graph.delete_document(doc_id)
+                result["neo4j"] = {"success": True, "doc_id": doc_id}
+            else:
+                # 패턴 없으면 doc_name 그대로 시도
+                graph.delete_document(request.doc_name)
+                result["neo4j"] = {"success": True, "doc_id": request.doc_name}
+    except Exception as e:
+        result["neo4j"] = {"success": False, "error": str(e)}
+
+    success = result["rdb"].get("success", False) or result["weaviate"].get("success", False)
+
     return {
         "success": success,
         "doc_name": request.doc_name,

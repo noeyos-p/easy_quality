@@ -16,6 +16,33 @@
   align-items: center;
 }
 
+.header-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.btn-delete-doc {
+  background-color: #3e3e3e;
+  color: #cccccc;
+  border: none;
+  padding: 6px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.btn-delete-doc:hover:not(:disabled) {
+  background-color: #c82829;
+  color: white;
+}
+
+.btn-delete-doc:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 .panel-header h2 {
   font-size: 13px;
   font-weight: 600;
@@ -117,7 +144,6 @@
 
 .document-item {
   display: flex;
-  justify-content: space-between;
   align-items: center;
   padding: 6px 8px;
   border-radius: 4px;

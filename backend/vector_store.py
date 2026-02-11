@@ -515,17 +515,21 @@ def search_advanced(
 # ═══════════════════════════════════════════════════════════════════════════
 
 def delete_by_doc_name(doc_name: str, collection_name: str = DEFAULT_COLLECTION, model_name: Optional[str] = None) -> Dict:
-    """v4: collection.data.delete_many() 활용"""
+    """doc_id 또는 doc_name 프로퍼티로 벡터 삭제"""
     actual_classes = [get_collection_name_for_model(collection_name, model_name)] if model_name else [c for c in list_collections() if c.startswith(collection_name)]
-    
+
     client = get_client()
     deleted_total = 0
-    
+
     for cls in actual_classes:
         col = client.collections.get(cls)
-        res = col.data.delete_many(where=Filter.by_property("doc_name").equal(doc_name))
+        # 청크 메타데이터에는 doc_id 필드로 저장됨 → doc_id로 우선 삭제
+        res = col.data.delete_many(where=Filter.by_property("doc_id").equal(doc_name))
         deleted_total += res.successful
-        
+        # doc_name 필드에도 혹시 있을 경우 추가 삭제
+        res2 = col.data.delete_many(where=Filter.by_property("doc_name").equal(doc_name))
+        deleted_total += res2.successful
+
     return {"success": deleted_total > 0, "deleted": deleted_total}
 
 
