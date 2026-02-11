@@ -7,9 +7,16 @@ interface Document {
   doc_id: string;
   doc_name?: string;
   doc_title?: string;
+  doc_category?: string;
   chunk_count?: number;
   model?: string;
   collection?: string;
+}
+
+interface DocumentGroup {
+  category: string;
+  documents: Document[];
+  expanded: boolean;
 }
 
 interface Version {
@@ -30,6 +37,7 @@ interface DocumentManagementPanelProps {
 
 export default function DocumentManagementPanel({ onDocumentSelect }: DocumentManagementPanelProps) {
   const [documents, setDocuments] = useState<Document[]>([]);
+  const [groupedDocuments, setGroupedDocuments] = useState<Map<string, DocumentGroup>>(new Map());
   const [selectedDoc, setSelectedDoc] = useState<string | null>(null);
   const [versions, setVersions] = useState<Version[]>([]);
   const [documentContent, setDocumentContent] = useState<DocumentContent | null>(null);
@@ -48,10 +56,46 @@ export default function DocumentManagementPanel({ onDocumentSelect }: DocumentMa
       const response = await fetch(`${API_URL}/rag/documents`);
       const data = await response.json();
       console.log('🔍 [Documents API Response]', data);
-      setDocuments(data.documents || []);
+      const docs = data.documents || [];
+      setDocuments(docs);
+
+      // 문서를 카테고리별로 그룹화
+      const groups = new Map<string, DocumentGroup>();
+      docs.forEach((doc: Document) => {
+        const category = doc.doc_category || '기타';
+        if (!groups.has(category)) {
+          groups.set(category, {
+            category,
+            documents: [],
+            expanded: true, // 기본적으로 펼쳐진 상태
+          });
+        }
+        groups.get(category)!.documents.push(doc);
+      });
+
+      // 카테고리 순서: SOP > WI > FRM > 기타
+      const sortedGroups = new Map(
+        Array.from(groups.entries()).sort((a, b) => {
+          const order = ['SOP', 'WI', 'FRM', '기타'];
+          return order.indexOf(a[0]) - order.indexOf(b[0]);
+        })
+      );
+
+      setGroupedDocuments(sortedGroups);
     } catch (error) {
       console.error('문서 목록 조회 실패:', error);
     }
+  };
+
+  const toggleGroup = (category: string) => {
+    setGroupedDocuments((prev) => {
+      const newGroups = new Map(prev);
+      const group = newGroups.get(category);
+      if (group) {
+        group.expanded = !group.expanded;
+      }
+      return newGroups;
+    });
   };
 
   // 문서 선택 시 버전 목록 로드
@@ -170,39 +214,56 @@ export default function DocumentManagementPanel({ onDocumentSelect }: DocumentMa
       </div>
 
       <div className="panel-content">
-        {/* 문서 목록 */}
+        {/* 문서 목록 (폴더 구조) */}
         <div className="document-list">
           <h3>문서 목록</h3>
-          {documents.length === 0 ? (
+          {groupedDocuments.size === 0 ? (
             <p className="empty-message">문서가 없습니다.</p>
           ) : (
-            documents.map((doc, idx) => (
-              <div
-                key={idx}
-                className={`document-item ${selectedDoc === doc.doc_id ? 'active' : ''}`}
-              >
-                <div className="document-info" onClick={() => handleDocumentSelect(doc.doc_id)}>
-                  <span>{doc.doc_id}</span>
-                  {doc.chunk_count && (
-                    <span className="doc-chunk-count">({doc.chunk_count}개)</span>
-                  )}
+            Array.from(groupedDocuments.values()).map((group) => (
+              <div key={group.category} className="document-group">
+                {/* 폴더 헤더 */}
+                <div className="folder-header" onClick={() => toggleGroup(group.category)}>
+                  <span className="folder-icon">{group.expanded ? '📂' : '📁'}</span>
+                  <span className="folder-name">{group.category}</span>
+                  <span className="folder-count">({group.documents.length})</span>
                 </div>
-                <div className="document-actions">
-                  <button
-                    className="btn-icon"
-                    onClick={() => handleViewDocument(doc.doc_id)}
-                    title="내용 보기"
-                  >
-                    보기
-                  </button>
-                  <button
-                    className="btn-icon btn-delete"
-                    onClick={() => handleDeleteDocument(doc.doc_id)}
-                    title="삭제"
-                  >
-                    삭제
-                  </button>
-                </div>
+
+                {/* 폴더 내 문서들 */}
+                {group.expanded && (
+                  <div className="folder-content">
+                    {group.documents.map((doc, idx) => (
+                      <div
+                        key={idx}
+                        className={`document-item ${selectedDoc === doc.doc_id ? 'active' : ''}`}
+                      >
+                        <div className="document-info" onClick={() => handleDocumentSelect(doc.doc_id)}>
+                          <span className="doc-icon">📄</span>
+                          <span>{doc.doc_id}</span>
+                          {doc.chunk_count && (
+                            <span className="doc-chunk-count">({doc.chunk_count}개)</span>
+                          )}
+                        </div>
+                        <div className="document-actions">
+                          <button
+                            className="btn-icon"
+                            onClick={() => handleViewDocument(doc.doc_id)}
+                            title="내용 보기"
+                          >
+                            보기
+                          </button>
+                          <button
+                            className="btn-icon btn-delete"
+                            onClick={() => handleDeleteDocument(doc.doc_id)}
+                            title="삭제"
+                          >
+                            삭제
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             ))
           )}
