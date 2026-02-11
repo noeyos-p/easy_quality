@@ -24,7 +24,6 @@ interface Version {
   created_at: string;
 }
 
-
 interface DocumentManagementPanelProps {
   onDocumentSelect?: (docId: string, content?: string) => void;
 }
@@ -118,7 +117,7 @@ export default function DocumentManagementPanel({ onDocumentSelect }: DocumentMa
         : `${API_URL}/rag/document/${docName}/content`;
 
       const response = await fetch(url);
-      const data = await response.json();
+      await response.json();
 
       // App.tsx의 뷰어에 표시
       if (onDocumentSelect) {
@@ -128,7 +127,6 @@ export default function DocumentManagementPanel({ onDocumentSelect }: DocumentMa
       console.error('문서 내용 조회 실패:', error);
     }
   };
-
 
   // 문서 삭제 (RDB + Weaviate + Neo4j)
   const handleDeleteDocument = async () => {
@@ -221,7 +219,6 @@ export default function DocumentManagementPanel({ onDocumentSelect }: DocumentMa
       </div>
 
       <div className="panel-content">
-        {/* 문서 목록 (폴더 구조) */}
         <div className="document-list">
           <h3>문서 목록</h3>
           {groupedDocuments.size === 0 ? (
@@ -229,20 +226,23 @@ export default function DocumentManagementPanel({ onDocumentSelect }: DocumentMa
           ) : (
             Array.from(groupedDocuments.values()).map((group) => (
               <div key={group.category} className="document-group">
-                {/* 폴더 헤더 */}
                 <div className="folder-header" onClick={() => toggleGroup(group.category)}>
                   <span className="folder-icon">{group.expanded ? '📂' : '📁'}</span>
                   <span className="folder-name">{group.category}</span>
                   <span className="folder-count">({group.documents.length})</span>
                 </div>
 
-                {/* 폴더 내 문서들 */}
                 {group.expanded && (
                   <div className="folder-content">
                     {group.documents.map((doc, idx) => (
                       <div
                         key={idx}
                         className={`document-item ${selectedDoc === doc.doc_id ? 'active' : ''}`}
+                        draggable={true}
+                        onDragStart={(e) => {
+                          e.dataTransfer.setData('text/plain', doc.doc_id);
+                          e.dataTransfer.effectAllowed = 'copy';
+                        }}
                       >
                         <div className="document-info" onClick={() => handleDocumentSelect(doc.doc_id)}>
                           <span className="doc-icon">📄</span>
@@ -260,7 +260,6 @@ export default function DocumentManagementPanel({ onDocumentSelect }: DocumentMa
           )}
         </div>
 
-        {/* 버전 목록 */}
         {selectedDoc && versions.length > 0 && (
           <div className="version-list">
             <h3>버전 이력</h3>
@@ -281,12 +280,10 @@ export default function DocumentManagementPanel({ onDocumentSelect }: DocumentMa
             ))}
           </div>
         )}
-
       </div>
 
-      {/* 업로드 모달 */}
       {isUploadModalOpen && (
-        <div className="modal-overlay" onClick={() => setIsUploadModalOpen(false)}>
+        <div className="modal-overlay" onClick={() => !isUploading && setIsUploadModalOpen(false)}>
           <div className="modal-content" onClick={(e) => e.stopPropagation()}>
             <h3>문서 업로드</h3>
             <input
@@ -300,7 +297,7 @@ export default function DocumentManagementPanel({ onDocumentSelect }: DocumentMa
               <button onClick={handleUpload} disabled={isUploading || !uploadFile}>
                 업로드
               </button>
-              <button onClick={() => setIsUploadModalOpen(false)} disabled={isUploading}>
+              <button onClick={() => { setIsUploadModalOpen(false); setUploadProgress(''); setUploadFile(null); }} disabled={isUploading}>
                 취소
               </button>
             </div>

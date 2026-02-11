@@ -76,6 +76,7 @@ function App() {
   const [suggestionIndex, setSuggestionIndex] = useState(0)
   const [mentionTriggerPos, setMentionTriggerPos] = useState<number | null>(null)
   const [selectedDocs, setSelectedDocs] = useState<string[]>([])
+  const [isDraggingOver, setIsDraggingOver] = useState(false)
   // 그래프 시각화 상태
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [graphData, setGraphData] = useState<{ nodes: any[], links: any[] } | null>(null)
@@ -539,7 +540,33 @@ function App() {
         </div>
 
         {/* 가운데: 문서 뷰어 또는 그래프 시각화 */}
-        <main className="document-viewer">
+        <main
+          className={`document-viewer ${isDraggingOver ? 'dragging-over' : ''}`}
+          onDragOver={(e) => {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'copy';
+            if (!isDraggingOver) setIsDraggingOver(true);
+          }}
+          onDragLeave={() => {
+            setIsDraggingOver(false);
+          }}
+          onDrop={(e) => {
+            e.preventDefault();
+            setIsDraggingOver(false);
+            const docId = e.dataTransfer.getData('text/plain');
+            if (docId) {
+              handleDocumentSelect(docId);
+            }
+          }}
+        >
+          {isDraggingOver && (
+            <div className="drop-overlay">
+              <div className="drop-hint">
+                <span className="drop-hint-icon">📄</span>
+                <span className="drop-hint-text">여기에 드롭하여 문서 열기</span>
+              </div>
+            </div>
+          )}
           {activePanel === 'visualization' ? (
             // 전체 문서 그래프 시각화
             <div className="graph-visualization">
