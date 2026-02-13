@@ -2,13 +2,15 @@ import { useState, useEffect } from 'react';
 import docLargeIcon from '../../assets/icons/document-manage.svg'; // Vector 21 - SOP, WI
 import docSmallIcon from '../../assets/icons/document.svg';        // Vector 20 - FRM, 기타
 
-const API_URL = 'http://localhost:8000';
+const API_URL = '';
 
 interface Document {
   doc_id: string;
   doc_name?: string;
   doc_title?: string;
   doc_category?: string;
+  doc_type?: string;
+  version?: string;
   chunk_count?: number;
   model?: string;
   collection?: string;
@@ -27,10 +29,11 @@ interface Version {
 
 interface DocumentManagementPanelProps {
   onDocumentSelect?: (docId: string, content?: string) => void;
-  onNotify?: (message: string, type?: 'success' | 'error' | 'info') => void; // 🆕 알림 트리거용 프롭스
+  onNotify?: (message: string, type?: 'success' | 'error' | 'info') => void;
+  onOpenInEditor?: (docId: string, version?: string, mode?: 'view' | 'edit') => void;
 }
 
-export default function DocumentManagementPanel({ onDocumentSelect, onNotify }: DocumentManagementPanelProps) {
+export default function DocumentManagementPanel({ onDocumentSelect, onNotify, onOpenInEditor }: DocumentManagementPanelProps) {
   const [groupedDocuments, setGroupedDocuments] = useState<Map<string, DocumentGroup>>(new Map());
   const [selectedDoc, setSelectedDoc] = useState<string | null>(null);
   const [versions, setVersions] = useState<Version[]>([]);
@@ -39,6 +42,8 @@ export default function DocumentManagementPanel({ onDocumentSelect, onNotify }: 
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<string>('');
   const [isDeleting, setIsDeleting] = useState(false);
+  const [docxDocName, setDocxDocName] = useState<string>('');
+  const [docxVersion, setDocxVersion] = useState<string>('1.0');
 
   // 🆕 배경 처리 상태 관리
   const [isProcessing, setIsProcessing] = useState(false);
@@ -236,6 +241,8 @@ export default function DocumentManagementPanel({ onDocumentSelect, onNotify }: 
     }
   };
 
+  const isDocxFile = uploadFile?.name.toLowerCase().endsWith('.docx') ?? false;
+
   // 문서 업로드
   const handleUpload = async () => {
     if (!uploadFile) {
@@ -249,10 +256,25 @@ export default function DocumentManagementPanel({ onDocumentSelect, onNotify }: 
     const formData = new FormData();
     formData.append('file', uploadFile);
     formData.append('collection', 'documents');
-    formData.append('use_langgraph', 'true');
+
+    // DOCX는 /rag/upload-docx 엔드포인트로, PDF는 /rag/upload 엔드포인트로
+    if (isDocxFile) {
+      if (!docxDocName) {
+        alert('문서 ID를 입력해주세요.');
+        setIsUploading(false);
+        setUploadProgress('');
+        return;
+      }
+      formData.append('doc_name', docxDocName);
+      formData.append('version', docxVersion || '1.0');
+    } else {
+      formData.append('use_langgraph', 'true');
+    }
+
+    const uploadEndpoint = isDocxFile ? `${API_URL}/rag/upload-docx` : `${API_URL}/rag/upload`;
 
     try {
-      const response = await fetch(`${API_URL}/rag/upload`, {
+      const response = await fetch(uploadEndpoint, {
         method: 'POST',
         body: formData,
       });
@@ -271,6 +293,8 @@ export default function DocumentManagementPanel({ onDocumentSelect, onNotify }: 
           setIsUploadModalOpen(false);
           setUploadFile(null);
           setUploadProgress('');
+          setDocxDocName('');
+          setDocxVersion('1.0');
 
           // 🆕 배경 처리 상태 시작
           setIsProcessing(true);
@@ -376,6 +400,15 @@ export default function DocumentManagementPanel({ onDocumentSelect, onNotify }: 
                             <span className="text-txt-secondary text-[11px] ml-1">({doc.chunk_count}개)</span>
                           )}
                         </div>
+                        {doc.doc_type === 'docx' && onOpenInEditor && (
+                          <button
+                            className="ml-1 bg-transparent border border-dark-border text-[#4ec9b0] text-[10px] py-0.5 px-1.5 rounded cursor-pointer transition-all duration-200 hover:bg-dark-border hover:text-white flex-shrink-0"
+                            onClick={(e) => { e.stopPropagation(); onOpenInEditor(doc.doc_id, (doc as any).version) }}
+                            title="OnlyOffice 에디터에서 열기"
+                          >
+                            편집
+                          </button>
+                        )}
                       </div>
                     ))}
                   </div>
@@ -427,11 +460,40 @@ export default function DocumentManagementPanel({ onDocumentSelect, onNotify }: 
 
             <input
               type="file"
-              accept=".pdf"
+              accept=".pdf,.docx"
               className="w-full mb-4 text-txt-primary"
-              onChange={(e) => setUploadFile(e.target.files?.[0] || null)}
+              onChange={(e) => {
+                const f = e.target.files?.[0] || null;
+                setUploadFile(f);
+                if (f) {
+                  const stem = f.name.replace(/\.[^.]+$/, '');
+                  const idMatch = stem.match(/[A-Z]+-[A-Z]+-\d+/);
+                  if (idMatch) setDocxDocName(idMatch[0]);
+                }
+              }}
               disabled={isUploading}
             />
+
+            {isDocxFile && (
+              <div className="mb-4 flex flex-col gap-2">
+                <input
+                  type="text"
+                  placeholder="문서 ID (예: EQ-SOP-00001)"
+                  className="w-full bg-dark-bg border border-dark-border text-txt-primary text-[12px] px-3 py-2 rounded outline-none focus:border-accent-blue"
+                  value={docxDocName}
+                  onChange={(e) => setDocxDocName(e.target.value)}
+                  disabled={isUploading}
+                />
+                <input
+                  type="text"
+                  placeholder="버전 (예: 1.0)"
+                  className="w-full bg-dark-bg border border-dark-border text-txt-primary text-[12px] px-3 py-2 rounded outline-none focus:border-accent-blue"
+                  value={docxVersion}
+                  onChange={(e) => setDocxVersion(e.target.value)}
+                  disabled={isUploading}
+                />
+              </div>
+            )}
 
             {/* upload-progress */}
             {uploadProgress && (

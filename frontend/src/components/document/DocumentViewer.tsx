@@ -7,6 +7,9 @@ interface DocumentViewerProps {
   isEditing: boolean
   editedContent: string
   setEditedContent: (v: string) => void
+  isOnlyOfficeMode?: boolean
+  onlyOfficeConfig?: object | null
+  onlyOfficeServerUrl?: string
 }
 
 export default function DocumentViewer({
@@ -15,8 +18,49 @@ export default function DocumentViewer({
   isEditing,
   editedContent,
   setEditedContent,
+  isOnlyOfficeMode = false,
+  onlyOfficeConfig = null,
+  onlyOfficeServerUrl = '',
 }: DocumentViewerProps) {
   const [isDownloadOpen, setIsDownloadOpen] = React.useState(false)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const editorInstanceRef = React.useRef<any>(null)
+
+  // OnlyOffice 에디터 초기화
+  React.useEffect(() => {
+    if (!isOnlyOfficeMode || !onlyOfficeConfig || !onlyOfficeServerUrl) return
+
+    const editorContainerId = 'onlyoffice-editor'
+    const scriptSrc = `${onlyOfficeServerUrl}/web-apps/apps/api/documents/api.js`
+
+    const initEditor = () => {
+      // 이전 인스턴스 파괴
+      if (editorInstanceRef.current) {
+        try { editorInstanceRef.current.destroyEditor() } catch (_) {}
+        editorInstanceRef.current = null
+      }
+      const container = document.getElementById(editorContainerId)
+      if (container) container.innerHTML = ''
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const DocsAPI = (window as any).DocsAPI
+      if (DocsAPI) {
+        editorInstanceRef.current = new DocsAPI.DocEditor(editorContainerId, onlyOfficeConfig)
+      }
+    }
+
+    // 스크립트가 이미 로드됐는지 확인
+    const existingScript = document.querySelector(`script[src="${scriptSrc}"]`)
+    if (existingScript) {
+      initEditor()
+    } else {
+      const script = document.createElement('script')
+      script.src = scriptSrc
+      script.onload = initEditor
+      script.onerror = () => console.error('OnlyOffice API 스크립트 로드 실패:', scriptSrc)
+      document.head.appendChild(script)
+    }
+  }, [isOnlyOfficeMode, onlyOfficeConfig, onlyOfficeServerUrl])
 
   const handleDownload = async (format: 'pdf' | 'docx' | 'md') => {
     try {
@@ -66,7 +110,7 @@ export default function DocumentViewer({
     let inHeaderBlock = false
     let endOfDocumentReached = false
 
-    const flushParagraph = (endIdx: number) => {
+    const flushParagraph = (_endIdx: number) => {
       if (paragraphLines.length > 0) {
         const paragraphText = paragraphLines.join(' ')
         const totalPadding = globalDepth * indentIncrement
@@ -196,58 +240,69 @@ export default function DocumentViewer({
   }
 
   return (
-    <div className="flex-1 overflow-y-auto">
-      {/* 문서 헤더 */}
-      <div className="px-6 py-4 border-b border-dark-border bg-dark-deeper flex justify-between items-center">
-        <h2 className="text-[16px] font-medium text-txt-primary">{selectedDocument}</h2>
-        <div className="relative">
-          <button
-            className="bg-accent text-black border-none py-1.5 px-4 rounded text-[12px] font-bold cursor-pointer hover:bg-accent-hover transition-all duration-200 flex items-center gap-2 shadow-lg"
-            onClick={() => setIsDownloadOpen(!isDownloadOpen)}
-          >
-            📥 Download <span className="opacity-50">▼</span>
-          </button>
+    <div className="flex-1 flex flex-col overflow-hidden">
+      {/* OnlyOffice 모드 */}
+      {isOnlyOfficeMode ? (
+        <div
+          id="onlyoffice-editor"
+          className="flex-1"
+          style={{ width: '100%' }}
+        />
+      ) : (
+        <div className="flex-1 overflow-y-auto">
+          {/* 문서 헤더 */}
+          <div className="px-6 py-4 border-b border-dark-border bg-dark-deeper flex justify-between items-center">
+            <h2 className="text-[16px] font-medium text-txt-primary">{selectedDocument}</h2>
+            <div className="relative">
+              <button
+                className="bg-accent text-black border-none py-1.5 px-4 rounded text-[12px] font-bold cursor-pointer hover:bg-accent-hover transition-all duration-200 flex items-center gap-2 shadow-lg"
+                onClick={() => setIsDownloadOpen(!isDownloadOpen)}
+              >
+                📥 Download <span className="opacity-50">▼</span>
+              </button>
 
-          {isDownloadOpen && (
-            <div className="absolute right-0 mt-2 w-40 bg-dark-light border border-dark-border rounded shadow-2xl z-50 overflow-hidden">
-              <button
-                className="w-full text-left px-4 py-2.5 text-[12px] text-txt-primary hover:bg-dark-hover transition-colors flex items-center gap-2"
-                onClick={() => handleDownload('pdf')}
-              >
-                <span className="text-red-400">📄</span> PDF Document
-              </button>
-              <button
-                className="w-full text-left px-4 py-2.5 text-[12px] text-txt-primary hover:bg-dark-hover border-t border-dark-border transition-colors flex items-center gap-2"
-                onClick={() => handleDownload('docx')}
-              >
-                <span className="text-blue-400">📝</span> Word (.docx)
-              </button>
-              <button
-                className="w-full text-left px-4 py-2.5 text-[12px] text-txt-primary hover:bg-dark-hover border-t border-dark-border transition-colors flex items-center gap-2"
-                onClick={() => handleDownload('md')}
-              >
-                <span className="text-green-400">markdown</span> Markdown (.md)
-              </button>
+              {isDownloadOpen && (
+                <div className="absolute right-0 mt-2 w-40 bg-dark-light border border-dark-border rounded shadow-2xl z-50 overflow-hidden">
+                  <button
+                    className="w-full text-left px-4 py-2.5 text-[12px] text-txt-primary hover:bg-dark-hover transition-colors flex items-center gap-2"
+                    onClick={() => handleDownload('pdf')}
+                  >
+                    <span className="text-red-400">📄</span> PDF Document
+                  </button>
+                  <button
+                    className="w-full text-left px-4 py-2.5 text-[12px] text-txt-primary hover:bg-dark-hover border-t border-dark-border transition-colors flex items-center gap-2"
+                    onClick={() => handleDownload('docx')}
+                  >
+                    <span className="text-blue-400">📝</span> Word (.docx)
+                  </button>
+                  <button
+                    className="w-full text-left px-4 py-2.5 text-[12px] text-txt-primary hover:bg-dark-hover border-t border-dark-border transition-colors flex items-center gap-2"
+                    onClick={() => handleDownload('md')}
+                  >
+                    <span className="text-green-400">markdown</span> Markdown (.md)
+                  </button>
+                </div>
+              )}
             </div>
-          )}
-        </div>
-      </div>
-
-      {/* 문서 내용 */}
-      <div className="p-0 bg-[#c8c8c8] flex flex-col items-center gap-[30px]">
-        {isEditing ? (
-          <div className="w-full max-w-[1100px] h-[calc(100vh-120px)] bg-dark-deeper border border-dark-border rounded overflow-hidden shadow-[0_10px_30px_rgba(0,0,0,0.3)]">
-            <textarea
-              className="document-editor w-full h-full bg-transparent text-[#d4d4d4] border-none p-[30px] font-mono text-[14px] leading-[1.6] resize-none outline-none"
-              value={editedContent}
-              onChange={(e) => setEditedContent(e.target.value)}
-              placeholder="문서 내용을 수정하세요..."
-            />
           </div>
-        ) : (
-          renderDocument()
-        )}
-      </div>
+
+          {/* 문서 내용 */}
+          <div className="p-0 bg-[#c8c8c8] flex flex-col items-center gap-[30px]">
+            {isEditing ? (
+              <div className="w-full max-w-[1100px] h-[calc(100vh-120px)] bg-dark-deeper border border-dark-border rounded overflow-hidden shadow-[0_10px_30px_rgba(0,0,0,0.3)]">
+                <textarea
+                  className="document-editor w-full h-full bg-transparent text-[#d4d4d4] border-none p-[30px] font-mono text-[14px] leading-[1.6] resize-none outline-none"
+                  value={editedContent}
+                  onChange={(e) => setEditedContent(e.target.value)}
+                  placeholder="문서 내용을 수정하세요..."
+                />
+              </div>
+            ) : (
+              renderDocument()
+            )}
+          </div>
+        </div>
+      )}
     </div>
   )
 }

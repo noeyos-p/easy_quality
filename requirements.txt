@@ -43,6 +43,11 @@ openai
 # === LangSmith (추적/모니터링) ===
 langsmith
 
+# === S3 / OnlyOffice ===
+boto3
+PyJWT
+httpx
+
 # === 기타 ===
 pydantic
 numpy

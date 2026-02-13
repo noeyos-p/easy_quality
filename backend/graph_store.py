@@ -16,6 +16,7 @@ Neo4j 그래프 저장소
 - BELONGS_TO_CONCEPT: Section -> Concept
 """
 
+import os
 from neo4j import GraphDatabase
 from typing import List, Dict, Optional
 import re
@@ -27,10 +28,10 @@ class Neo4jGraphStore:
 
     def __init__(
         self,
-        uri: str = "neo4j+s://d00efa60.databases.neo4j.io",
-        user: str = "neo4j",
-        password: str = "4Qs45al1Coz_NwZDSMcFV9JIFjU7zXPjdKyptQloS6c",
-        database: str = "neo4j"
+        uri: str = os.getenv("NEO4J_URI", "neo4j+s://d00efa60.databases.neo4j.io"),
+        user: str = os.getenv("NEO4J_USER", "neo4j"),
+        password: str = os.getenv("NEO4J_PASSWORD", ""),
+        database: str = os.getenv("NEO4J_DATABASE", "neo4j")
     ):
         self.uri = uri
         self.user = user

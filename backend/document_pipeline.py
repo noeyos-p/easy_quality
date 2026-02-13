@@ -18,8 +18,79 @@ from .llm import get_llm_response
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 1단계: PDF → 마크다운 변환
+# 1단계: 문서 → 마크다운 변환 (PDF / DOCX)
 # ═══════════════════════════════════════════════════════════════════════════
+
+def docx_to_markdown(docx_content: bytes) -> str:
+    """
+    DOCX를 마크다운으로 변환 (python-docx 사용)
+
+    지원: 단락, 제목, 표, 목록
+    """
+    try:
+        from docx import Document as DocxDocument
+        from io import BytesIO
+
+        doc = DocxDocument(BytesIO(docx_content))
+        lines = []
+
+        for block in doc.element.body:
+            tag = block.tag.split('}')[-1] if '}' in block.tag else block.tag
+
+            if tag == 'p':
+                # 단락 처리
+                from docx.oxml.ns import qn
+                para_elem = block
+                style_name = ''
+                pPr = para_elem.find(qn('w:pPr'))
+                if pPr is not None:
+                    pStyle = pPr.find(qn('w:pStyle'))
+                    if pStyle is not None:
+                        style_name = pStyle.get(qn('w:val'), '')
+
+                # 텍스트 추출
+                text = ''.join(
+                    r.text for r in para_elem.iter()
+                    if r.tag == qn('w:t') and r.text
+                )
+                if not text.strip():
+                    continue
+
+                # 제목 스타일 → 마크다운 헤딩
+                if 'Heading' in style_name or 'heading' in style_name:
+                    level = ''.join(filter(str.isdigit, style_name)) or '1'
+                    lines.append(f"{'#' * int(level)} {text}")
+                else:
+                    lines.append(text)
+
+            elif tag == 'tbl':
+                # 표 처리
+                from docx.oxml.ns import qn
+                rows = block.findall('.//' + qn('w:tr'))
+                if rows:
+                    table_lines = []
+                    for i, row in enumerate(rows):
+                        cells = row.findall('.//' + qn('w:tc'))
+                        cell_texts = []
+                        for cell in cells:
+                            cell_text = ''.join(
+                                r.text for r in cell.iter()
+                                if r.tag == qn('w:t') and r.text
+                            )
+                            cell_texts.append(cell_text.strip())
+                        table_lines.append('| ' + ' | '.join(cell_texts) + ' |')
+                        if i == 0:
+                            table_lines.append('| ' + ' | '.join(['---'] * len(cell_texts)) + ' |')
+                    lines.extend(table_lines)
+
+        result = '\n'.join(lines)
+        print("    ✓ python-docx로 DOCX 변환 완료")
+        return result
+
+    except Exception as e:
+        print(f"    DOCX 변환 실패: {e}")
+        raise Exception(f"DOCX 변환 실패: {e}")
+
 
 def pdf_to_markdown(pdf_content: bytes) -> str:
     """
@@ -225,6 +296,105 @@ def _split_recursive(text: str, chunk_size: int, chunk_overlap: int) -> List[str
         chunks.append(current_chunk.strip())
 
     return chunks
+
+
+def parse_docx_clauses(docx_content: bytes) -> List[Dict]:
+    """
+    DOCX 파일의 다단계 목록 구조(ilvl)를 읽어 조항 구조 생성.
+
+    Normal 스타일 + numPr ilvl 값으로 계층 판단:
+      ilvl=0 → 대분류 (level 0)
+      ilvl=1 → 중분류 (level 1)
+      ilvl=2 → 소분류 (level 2)
+    List Paragraph / ilvl 없는 Normal → 본문 content
+
+    Heading 스타일도 함께 지원 (혼합 문서 대응)
+    """
+    from docx import Document as DocxDocument
+    from docx.oxml.ns import qn
+    from io import BytesIO
+
+    doc = DocxDocument(BytesIO(docx_content))
+
+    def get_ilvl(para) -> int | None:
+        """numPr에서 ilvl 값 추출"""
+        numPr = para._element.find('.//' + qn('w:numPr'))
+        if numPr is not None:
+            ilvl_elem = numPr.find(qn('w:ilvl'))
+            if ilvl_elem is not None:
+                try:
+                    return int(ilvl_elem.get(qn('w:val'), -1))
+                except (ValueError, TypeError):
+                    pass
+        return None
+
+    def get_heading_level(style_name: str) -> int | None:
+        """Heading 1~6 / 제목 1~6 스타일에서 레벨 추출"""
+        for prefix in ("Heading ", "제목 "):
+            if style_name.startswith(prefix):
+                try:
+                    return int(style_name[len(prefix):]) - 1
+                except ValueError:
+                    pass
+        return None
+
+    counters = [0] * 9
+    clauses = []
+    current_clause = None
+    content_lines = []
+
+    def flush_clause():
+        nonlocal current_clause, content_lines
+        if current_clause is not None:
+            current_clause["content"] = "\n".join(content_lines).strip()
+            if current_clause["title"] or len(current_clause["content"]) >= 3:
+                clauses.append(current_clause)
+        current_clause = None
+        content_lines = []
+
+    def make_clause(level: int, title: str):
+        nonlocal current_clause, content_lines
+        flush_clause()
+        counters[level] += 1
+        for i in range(level + 1, len(counters)):
+            counters[i] = 0
+        clause_num = ".".join(str(counters[i]) for i in range(level + 1))
+        current_clause = {
+            "clause": clause_num,
+            "title": title,
+            "content": "",
+            "level": level,
+            "page": 1,
+        }
+        content_lines = []
+
+    for para in doc.paragraphs:
+        style_name = para.style.name if para.style else "Normal"
+        text = para.text.strip()
+        if not text:
+            continue
+
+        ilvl = get_ilvl(para)
+        heading_level = get_heading_level(style_name)
+
+        if heading_level is not None:
+            # Word 헤딩 스타일 우선
+            make_clause(heading_level, text)
+        elif ilvl is not None and style_name == "Normal":
+            # Normal + ilvl → 구조적 항목
+            make_clause(ilvl, text)
+        else:
+            # List Paragraph 또는 ilvl 없는 일반 본문
+            if current_clause is not None:
+                content_lines.append(text)
+            else:
+                # 조항 없이 시작하는 본문 → 가상 최상위 조항
+                make_clause(0, text[:100])
+
+    flush_clause()
+
+    print(f"    ✓ Word 다단계 목록 기반 {len(clauses)}개 조항 추출")
+    return clauses
 
 
 # ═══════════════════════════════════════════════════════════════════════════

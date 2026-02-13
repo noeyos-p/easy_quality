@@ -42,4 +42,4 @@ export interface ChatMessage {
   status?: 'waiting' | 'processing' | 'completed' | 'error' // 🆕 상세 상태
 }
 
-export const API_URL = 'http://localhost:8000'
+export const API_URL = ''
