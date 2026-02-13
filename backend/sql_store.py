@@ -436,13 +436,13 @@ class SQLStore:
             return [{"error": f"v{v2} 버전을 찾을 수 없습니다."}]
 
         # 조항별로 content를 병합한 후 비교
-        query = r"""
+        query = """
             WITH v1_clauses AS (
                 SELECT
                     clause,
                     STRING_AGG(content, ' ' ORDER BY id) as content
                 FROM chunk
-                WHERE document_id = %%s AND clause IS NOT NULL
+                WHERE document_id = %s AND clause IS NOT NULL
                 GROUP BY clause
             ),
             v2_clauses AS (
@@ -450,7 +450,7 @@ class SQLStore:
                     clause,
                     STRING_AGG(content, ' ' ORDER BY id) as content
                 FROM chunk
-                WHERE document_id = %%s AND clause IS NOT NULL
+                WHERE document_id = %s AND clause IS NOT NULL
                 GROUP BY clause
             )
             SELECT
@@ -458,7 +458,7 @@ class SQLStore:
                 CASE
                     WHEN v1.clause IS NULL THEN 'ADDED'
                     WHEN v2.clause IS NULL THEN 'DELETED'
-                    WHEN REGEXP_REPLACE(v1.content, r'\s+', '', 'g') <> REGEXP_REPLACE(v2.content, r'\s+', '', 'g') THEN 'MODIFIED'
+                    WHEN REGEXP_REPLACE(v1.content, '\\s+', '', 'g') <> REGEXP_REPLACE(v2.content, '\\s+', '', 'g') THEN 'MODIFIED'
                     ELSE 'UNCHANGED'
                 END as change_type,
                 v1.content as v1_content,

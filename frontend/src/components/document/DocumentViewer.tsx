@@ -246,7 +246,7 @@ export default function DocumentViewer({
         <div
           id="onlyoffice-editor"
           className="flex-1"
-          style={{ width: '100%' }}
+          style={{ width: '100%', minHeight: 0, position: 'relative', overflow: 'hidden' }}
         />
       ) : (
         <div className="flex-1 overflow-y-auto">

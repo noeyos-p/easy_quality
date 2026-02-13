@@ -60,6 +60,7 @@ def create_editor_config(
             "customization": {
                 "autosave": True,
                 "forcesave": False,
+                "zoom": -2,
             },
         },
     }

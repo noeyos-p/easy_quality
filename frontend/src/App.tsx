@@ -73,6 +73,10 @@ function App() {
   }, [])
 
   const handleDocumentSelect = async (docId: string, content?: string) => {
+    // OnlyOffice 모드 초기화
+    setIsOnlyOfficeMode(false)
+    setOnlyOfficeConfig(null)
+    setOnlyOfficeEditorMode('view')
     setSelectedDocument(docId)
     if (content) {
       setDocumentContent(content)
@@ -193,7 +197,7 @@ function App() {
   return (
     <div className="flex flex-col h-screen overflow-hidden">
       {/* 헤더 */}
-      <header className="flex justify-between items-center h-[35px] bg-dark-deeper border-b border-dark-border px-4">
+      <header className="flex justify-between items-center h-[35px] bg-dark-deeper border-b border-dark-border px-4 z-[200] relative">
         <div className="flex items-center gap-3">
           <button
             className={`border-none py-1 px-2 text-[14px] rounded cursor-pointer flex items-center justify-center transition-all duration-200 ${isLeftVisible ? 'bg-transparent text-txt-secondary hover:bg-dark-hover hover:text-accent' : 'bg-accent/10 text-accent'}`}
