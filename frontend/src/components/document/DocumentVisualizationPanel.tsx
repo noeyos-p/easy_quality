@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import MermaidRenderer from '../graph/MermaidRenderer';
 
-const API_URL = 'http://localhost:8000';
+const API_URL = '';
 
 interface Document {
   doc_id: string;

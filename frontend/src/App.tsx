@@ -35,6 +35,12 @@ function App() {
   const [isComparing, setIsComparing] = useState(false)
   const [diffData, setDiffData] = useState<any>(null)
 
+  // OnlyOffice 에디터 상태
+  const [isOnlyOfficeMode, setIsOnlyOfficeMode] = useState(false)
+  const [onlyOfficeEditorMode, setOnlyOfficeEditorMode] = useState<'view' | 'edit'>('view')
+  const [onlyOfficeConfig, setOnlyOfficeConfig] = useState<object | null>(null)
+  const [onlyOfficeServerUrl, setOnlyOfficeServerUrl] = useState<string>('')
+
   // 🆕 전역 알림(Toast) 상태
   const [toasts, setToasts] = useState<{ id: string, message: string, type: 'success' | 'error' | 'info' }[]>([])
 
@@ -89,6 +95,30 @@ function App() {
         setEditedContent('문서 내용을 가져오는 중 오류가 발생했습니다.')
         setIsEditing(false)
       }
+    }
+  }
+
+  const handleOpenInEditor = async (docName: string, version?: string, mode: 'view' | 'edit' = 'view') => {
+    try {
+      const response = await fetch(`${API_URL}/onlyoffice/config`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ doc_name: docName, version: version || null, user_name: '편집자', mode }),
+      })
+      if (!response.ok) {
+        const err = await response.json()
+        alert(`OnlyOffice 설정 오류: ${err.detail || '알 수 없는 오류'}`)
+        return
+      }
+      const data = await response.json()
+      setSelectedDocument(docName)
+      setOnlyOfficeConfig(data.config)
+      setOnlyOfficeServerUrl(data.onlyoffice_server_url)
+      setOnlyOfficeEditorMode(mode)
+      setIsOnlyOfficeMode(true)
+      setIsEditing(false)
+    } catch {
+      alert('OnlyOffice 에디터를 여는 중 오류가 발생했습니다.')
     }
   }
 
@@ -176,7 +206,31 @@ function App() {
 
           {selectedDocument && (
             <div className="flex gap-2 ml-4">
-              {!isEditing ? (
+              {isOnlyOfficeMode ? (
+                <>
+                  {onlyOfficeEditorMode === 'view' ? (
+                    <button
+                      className="bg-dark-hover border border-dark-border text-accent py-1 px-3 text-[11px] rounded cursor-pointer transition-all duration-200 hover:bg-dark-border hover:border-txt-secondary"
+                      onClick={() => handleOpenInEditor(selectedDocument, undefined, 'edit')}
+                    >
+                      편집
+                    </button>
+                  ) : (
+                    <button
+                      className="bg-dark-hover border border-dark-border text-accent py-1 px-3 text-[11px] rounded cursor-pointer transition-all duration-200 hover:bg-dark-border hover:border-txt-secondary"
+                      onClick={() => handleOpenInEditor(selectedDocument, undefined, 'view')}
+                    >
+                      보기
+                    </button>
+                  )}
+                  <button
+                    className="bg-dark-hover border border-dark-border text-[#f48fb1] py-1 px-3 text-[11px] rounded cursor-pointer transition-all duration-200 hover:bg-dark-border hover:border-txt-secondary"
+                    onClick={() => { setIsOnlyOfficeMode(false); setOnlyOfficeConfig(null); setIsEditing(false); setOnlyOfficeEditorMode('view') }}
+                  >
+                    에디터 닫기
+                  </button>
+                </>
+              ) : !isEditing ? (
                 <button
                   className="bg-dark-hover border border-dark-border text-accent py-1 px-3 text-[11px] rounded cursor-pointer transition-all duration-200 hover:bg-dark-border hover:border-txt-secondary"
                   onClick={() => setIsEditing(true)}
@@ -249,6 +303,7 @@ function App() {
             <DocumentManagementPanel
               onDocumentSelect={handleDocumentSelect}
               onNotify={addToast}
+              onOpenInEditor={handleOpenInEditor}
             />
           )}
           {activePanel === 'history' && (
@@ -258,7 +313,7 @@ function App() {
 
         {/* 가운데: 문서 뷰어 또는 그래프 */}
         <main
-          className={`flex-1 bg-dark-bg overflow-y-auto flex flex-col transition-all duration-300 relative ${isDraggingOver ? 'outline outline-2 outline-accent-blue outline-offset-[-2px]' : ''}`}
+          className={`flex-1 bg-dark-bg flex flex-col transition-all duration-300 relative ${isOnlyOfficeMode ? 'overflow-hidden' : 'overflow-y-auto'} ${isDraggingOver ? 'outline outline-2 outline-accent-blue outline-offset-[-2px]' : ''}`}
           onDragOver={(e) => {
             e.preventDefault()
             e.dataTransfer.dropEffect = 'copy'
@@ -294,13 +349,16 @@ function App() {
                 setDiffData(null)
               }}
             />
-          ) : selectedDocument && documentContent ? (
+          ) : selectedDocument && (documentContent || isOnlyOfficeMode) ? (
             <DocumentViewer
               selectedDocument={selectedDocument}
-              documentContent={documentContent}
+              documentContent={documentContent || ''}
               isEditing={isEditing}
               editedContent={editedContent}
               setEditedContent={setEditedContent}
+              isOnlyOfficeMode={isOnlyOfficeMode}
+              onlyOfficeConfig={onlyOfficeConfig}
+              onlyOfficeServerUrl={onlyOfficeServerUrl}
             />
           ) : (
             <div className="flex-1 flex flex-col items-center justify-center text-txt-secondary">

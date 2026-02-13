@@ -291,8 +291,10 @@ def md_to_pdf_binary(md_text: str) -> bytes:
         final_body_html = "".join(processed_elements)
 
         # 3. HTML 템플릿 구성
-        font_path = "/Users/soyeon/Library/Fonts/Pretendard-Regular.ttf"
-        bold_font_path = "/Users/soyeon/Library/Fonts/Pretendard-Bold.ttf"
+        import os as _os
+        _base_dir = _os.path.dirname(_os.path.abspath(__file__))
+        font_path = _os.path.join(_base_dir, "fonts", "Pretendard-Regular.ttf")
+        bold_font_path = _os.path.join(_base_dir, "fonts", "Pretendard-Bold.ttf")
         
         html_template = f"""
         <html>
@@ -2098,6 +2100,441 @@ def evaluate_answer(request: EvaluationRequest):
 # ═══════════════════════════════════════════════════════════════════════════
 # 서버 실행
 # ═══════════════════════════════════════════════════════════════════════════
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# OnlyOffice + S3 엔드포인트
+# ═══════════════════════════════════════════════════════════════════════════
+
+class OnlyOfficeConfigRequest(BaseModel):
+    doc_name: str
+    version: Optional[str] = None
+    user_name: str = "편집자"
+    mode: str = "view"
+
+
+class UploadS3Request(BaseModel):
+    s3_key: str
+    doc_name: str
+    version: str = "1.0"
+
+
+# S3 / OnlyOffice 싱글톤 (필요 시 lazy 초기화)
+_s3_store = None
+
+def get_s3_store():
+    global _s3_store
+    if _s3_store is None:
+        from backend.s3_store import S3Store
+        _s3_store = S3Store()
+    return _s3_store
+
+
+@app.post("/rag/upload-docx")
+async def upload_docx_to_s3(
+    file: UploadFile = File(...),
+    doc_name: str = Form(...),
+    version: str = Form("1.0"),
+    collection: str = Form("documents"),
+):
+    """
+    DOCX 파일을 S3에 저장 후 RAG 파이프라인 실행
+
+    입력: file (DOCX), doc_name (문서 ID), version
+    동작:
+      1. S3에 저장 (documents/{doc_name}/v{version}/document.docx)
+      2. DOCX → 마크다운 변환
+      3. Weaviate + PostgreSQL + Neo4j 저장
+    """
+    start_time = time.time()
+
+    if not file.filename.lower().endswith('.docx'):
+        raise HTTPException(400, "DOCX 파일만 업로드 가능합니다.")
+
+    content = await file.read()
+
+    # 1. S3 저장
+    s3 = get_s3_store()
+    s3_key = s3.upload_docx(doc_name, version, content)
+    print(f"  S3 저장 완료: {s3_key}")
+
+    # 2. 파이프라인 실행
+    model_path = resolve_model_path("multilingual-e5-small")
+    embed_model = SentenceTransformer(model_path)
+    filename = f"{doc_name}_v{version}.docx"
+
+    result = process_document(
+        file_path=filename,
+        content=content,
+        doc_id=doc_name,
+        use_llm_metadata=False,
+        embed_model=embed_model,
+    )
+
+    if not result.get("success"):
+        raise HTTPException(400, f"문서 처리 실패: {result.get('errors')}")
+
+    chunks_data = result.get("chunks", [])
+
+    from dataclasses import dataclass as _dc
+
+    @_dc
+    class _Chunk:
+        text: str
+        metadata: dict
+        index: int = 0
+
+    chunks = [_Chunk(text=c["text"], metadata=c["metadata"], index=c["index"]) for c in chunks_data]
+
+    # 3. Weaviate 저장
+    pipeline_version = "pdf-clause-v2.0"
+    texts = [c.text for c in chunks]
+    metadatas = [
+        {**c.metadata, "chunk_method": "article", "model": "multilingual-e5-small", "pipeline_version": pipeline_version}
+        for c in chunks
+    ]
+    vector_store.add_documents(
+        texts=texts, metadatas=metadatas, collection_name=collection, model_name=model_path
+    )
+
+    # 4. PostgreSQL 저장
+    from backend.document_pipeline import docx_to_markdown
+    markdown_text = docx_to_markdown(content)
+
+    doc_id_db = sql_store.save_document(
+        doc_name=doc_name,
+        content=markdown_text,
+        doc_type="docx",
+        version=version,
+    )
+    if doc_id_db and chunks:
+        batch_chunks = [
+            {"clause": c.metadata.get("clause_id"), "content": c.text, "metadata": c.metadata}
+            for c in chunks
+        ]
+        sql_store.save_chunks_batch(doc_id_db, batch_chunks)
+
+    # 5. Neo4j 저장
+    try:
+        graph = get_graph_store()
+        if graph.test_connection():
+            _upload_to_neo4j_from_pipeline(graph, result, filename)
+    except Exception as graph_err:
+        print(f"  Neo4j 저장 실패 (건너뜀): {graph_err}")
+
+    elapsed = round(time.time() - start_time, 2)
+    return {
+        "success": True,
+        "doc_name": doc_name,
+        "version": version,
+        "s3_key": s3_key,
+        "chunks": len(chunks),
+        "elapsed_seconds": elapsed,
+    }
+
+
+@app.post("/onlyoffice/config")
+async def onlyoffice_config(request: OnlyOfficeConfigRequest):
+    """
+    OnlyOffice 에디터 설정 JSON 반환
+
+    입력: { doc_name, version(optional), user_name }
+    동작:
+      1. SQL에서 최신 버전 조회 (version 미지정 시)
+      2. S3 presigned URL 생성
+      3. OnlyOffice 설정 JSON 반환
+    """
+    try:
+        from backend.onlyoffice_service import create_editor_config, get_onlyoffice_server_url, BACKEND_URL
+
+        doc_name = request.doc_name
+
+        # 버전 결정: 사용자 지정 없으면 DB 최신 버전 사용
+        version = request.version
+        if not version:
+            versions_data = sql_store.get_document_versions(doc_name)
+            if not versions_data:
+                raise HTTPException(404, f"문서를 찾을 수 없습니다: {doc_name}")
+            version = versions_data[0].get('version', '1.0')
+
+        # 백엔드 내부 URL 사용 (S3 presigned URL 대신)
+        # OnlyOffice가 JWT 헤더를 붙여 요청 → 백엔드가 검증 후 S3에서 파일 서빙
+        file_url = f"{BACKEND_URL}/onlyoffice/document/{doc_name}/{version}"
+
+        # OnlyOffice 설정 생성
+        config = create_editor_config(
+            doc_id=doc_name,
+            version=version,
+            user_name=request.user_name,
+            file_url=file_url,
+            mode=request.mode,
+        )
+
+        return {
+            "config": config,
+            "doc_name": doc_name,
+            "version": version,
+            "onlyoffice_server_url": get_onlyoffice_server_url(),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(500, f"OnlyOffice 설정 생성 실패: {str(e)}")
+
+
+@app.get("/onlyoffice/document/{doc_name}/{version}")
+async def serve_docx_for_onlyoffice(doc_name: str, version: str):
+    """
+    OnlyOffice Document Server가 DOCX를 가져가는 내부 엔드포인트.
+    S3 presigned URL 대신 이 URL을 document.url로 사용:
+      - OnlyOffice가 JWT Authorization 헤더를 붙여도 S3와 충돌 없음
+      - 백엔드가 S3에서 파일을 가져와 OnlyOffice에 직접 서빙
+    """
+    try:
+        s3 = get_s3_store()
+        content = s3.download_docx(doc_name, version)
+        return Response(
+            content=content,
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            headers={"Content-Disposition": f'attachment; filename="{doc_name}_v{version}.docx"'},
+        )
+    except Exception as e:
+        raise HTTPException(404, f"문서를 찾을 수 없습니다: {doc_name} v{version} ({e})")
+
+
+@app.post("/onlyoffice/callback")
+async def onlyoffice_callback(request: Request):
+    """
+    OnlyOffice 콜백 처리
+
+    OnlyOffice가 저장 완료 시 호출.
+    status 2(저장 중) 또는 6(편집 완료) 시 DOCX를 S3에 새 버전으로 저장하고
+    RAG 파이프라인을 실행합니다.
+
+    반환: {"error": 0} (OnlyOffice 요구사항)
+    """
+    try:
+        callback_data = await request.json()
+        status = callback_data.get('status')
+        download_url = callback_data.get('url')
+        key = callback_data.get('key', '')
+
+        print(f"\n[OnlyOffice Callback] status={status}, key={key}")
+
+        # status 2 = 문서 저장 중, status 6 = 편집 완료(강제 저장)
+        if status not in (2, 6):
+            return {"error": 0}
+
+        if not download_url:
+            print("  콜백 URL 없음 - 건너뜀")
+            return {"error": 0}
+
+        # key 형식: {doc_id}_v{version}_{timestamp}
+        parts = key.split('_v')
+        doc_id = parts[0] if len(parts) > 1 else key
+        version_part = parts[1].rsplit('_', 1)[0] if len(parts) > 1 else '1.0'
+
+        # 새 버전 번호 결정 (현재 버전 + 0.1)
+        try:
+            current_v = float(version_part)
+            new_version = f"{current_v + 0.1:.1f}"
+        except ValueError:
+            new_version = version_part + "_edited"
+
+        print(f"  문서: {doc_id}, 현재버전: {version_part} → 새버전: {new_version}")
+
+        # 1. OnlyOffice 서버에서 편집된 DOCX 다운로드
+        from backend.onlyoffice_service import download_from_onlyoffice
+        docx_content = await download_from_onlyoffice(download_url)
+        print(f"  DOCX 다운로드 완료: {len(docx_content)} bytes")
+
+        # 2. S3에 새 버전으로 저장
+        s3 = get_s3_store()
+        s3_key = s3.upload_docx(doc_id, new_version, docx_content)
+        print(f"  S3 저장 완료: {s3_key}")
+
+        # 3. DOCX → 마크다운 변환
+        from backend.document_pipeline import docx_to_markdown
+        markdown_text = docx_to_markdown(docx_content)
+
+        # 4. RAG 파이프라인 실행 (process_document)
+        model_path = resolve_model_path("multilingual-e5-small")
+        embed_model = SentenceTransformer(model_path)
+
+        result = process_document(
+            file_path=f"{doc_id}_v{new_version}.docx",
+            content=docx_content,
+            doc_id=doc_id,
+            use_llm_metadata=False,
+            embed_model=embed_model,
+        )
+
+        if not result.get("success"):
+            print(f"  파이프라인 실패: {result.get('errors')}")
+            return {"error": 0}
+
+        chunks_data = result.get("chunks", [])
+
+        # 5. Weaviate 저장
+        from dataclasses import dataclass as _dc2
+
+        @_dc2
+        class _Chunk2:
+            text: str
+            metadata: dict
+            index: int = 0
+
+        chunks = [_Chunk2(text=c["text"], metadata=c["metadata"], index=c["index"]) for c in chunks_data]
+        texts = [c.text for c in chunks]
+        metadatas = [
+            {**c.metadata, "chunk_method": "article", "model": "multilingual-e5-small", "pipeline_version": "pdf-clause-v2.0"}
+            for c in chunks
+        ]
+        vector_store.add_documents(
+            texts=texts, metadatas=metadatas, collection_name="documents", model_name=model_path
+        )
+
+        # 6. PostgreSQL 저장
+        doc_id_db = sql_store.save_document(
+            doc_name=doc_id,
+            content=markdown_text,
+            doc_type="docx",
+            version=new_version,
+        )
+        if doc_id_db and chunks:
+            batch_chunks = [
+                {"clause": c.metadata.get("clause_id"), "content": c.text, "metadata": c.metadata}
+                for c in chunks
+            ]
+            sql_store.save_chunks_batch(doc_id_db, batch_chunks)
+
+        # 7. Neo4j 저장
+        try:
+            graph = get_graph_store()
+            if graph.test_connection():
+                _upload_to_neo4j_from_pipeline(graph, result, f"{doc_id}_v{new_version}.docx")
+        except Exception as graph_err:
+            print(f"  Neo4j 저장 실패 (건너뜀): {graph_err}")
+
+        print(f"  [OnlyOffice Callback] 완료 - 새 버전 {new_version} 저장됨")
+        return {"error": 0}
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f"  [OnlyOffice Callback] 오류: {e}")
+        # OnlyOffice는 error: 0이 아니면 재시도하므로 항상 0 반환
+        return {"error": 0}
+
+
+@app.post("/rag/upload-s3")
+async def upload_from_s3(request: UploadS3Request):
+    """
+    S3에 이미 있는 DOCX 파일을 RAG 파이프라인으로 처리
+
+    입력: { s3_key, doc_name, version }
+    동작:
+      1. S3에서 DOCX 다운로드
+      2. 기존 /rag/upload 파이프라인 실행
+    """
+    start_time = time.time()
+    try:
+        import boto3
+        import os
+
+        # S3에서 파일 다운로드
+        s3_client = boto3.client(
+            's3',
+            aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
+            aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY'),
+            region_name=os.getenv('AWS_REGION', 'ap-northeast-2'),
+        )
+        bucket = os.getenv('S3_BUCKET_NAME')
+        response = s3_client.get_object(Bucket=bucket, Key=request.s3_key)
+        content = response['Body'].read()
+
+        filename = f"{request.doc_name}_v{request.version}.docx"
+        model_path = resolve_model_path("multilingual-e5-small")
+        embed_model = SentenceTransformer(model_path)
+
+        result = process_document(
+            file_path=filename,
+            content=content,
+            doc_id=request.doc_name,
+            use_llm_metadata=False,
+            embed_model=embed_model,
+        )
+
+        if not result.get("success"):
+            raise HTTPException(400, f"문서 처리 실패: {result.get('errors')}")
+
+        chunks_data = result.get("chunks", [])
+
+        from dataclasses import dataclass as _dc3
+
+        @_dc3
+        class _Chunk3:
+            text: str
+            metadata: dict
+            index: int = 0
+
+        chunks = [_Chunk3(text=c["text"], metadata=c["metadata"], index=c["index"]) for c in chunks_data]
+
+        # Weaviate 저장
+        pipeline_version = "pdf-clause-v2.0"
+        texts = [c.text for c in chunks]
+        metadatas = [
+            {**c.metadata, "chunk_method": "article", "model": "multilingual-e5-small", "pipeline_version": pipeline_version}
+            for c in chunks
+        ]
+        vector_store.add_documents(
+            texts=texts, metadatas=metadatas, collection_name="documents", model_name=model_path
+        )
+
+        # PostgreSQL 저장
+        from backend.document_pipeline import docx_to_markdown
+        markdown_text = docx_to_markdown(content)
+
+        final_version = request.version or result.get("version", "1.0")
+        doc_id_db = sql_store.save_document(
+            doc_name=request.doc_name,
+            content=markdown_text,
+            doc_type="docx",
+            version=final_version,
+        )
+        if doc_id_db and chunks:
+            batch_chunks = [
+                {"clause": c.metadata.get("clause_id"), "content": c.text, "metadata": c.metadata}
+                for c in chunks
+            ]
+            sql_store.save_chunks_batch(doc_id_db, batch_chunks)
+
+        # Neo4j 저장
+        try:
+            graph = get_graph_store()
+            if graph.test_connection():
+                _upload_to_neo4j_from_pipeline(graph, result, filename)
+        except Exception as graph_err:
+            print(f"  Neo4j 저장 실패 (건너뜀): {graph_err}")
+
+        elapsed = round(time.time() - start_time, 2)
+        return {
+            "success": True,
+            "doc_name": request.doc_name,
+            "version": final_version,
+            "chunks": len(chunks),
+            "elapsed_seconds": elapsed,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(500, f"S3 업로드 처리 실패: {str(e)}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
