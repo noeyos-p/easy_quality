@@ -970,12 +970,17 @@ async def chat_worker():
             from backend.agent import run_agent, init_agent_tools
             init_agent_tools(vector_store, get_graph_store(), sql_store)
             
-            # 🧠 롱텀 메모리: 이전 대화 기록 조회
+            # 🧠 롱텀 메모리: 이전 대화 기록 조회 (세션 기반)
             chat_history = []
             if user_id:
                 try:
-                    chat_history = sql_store.get_conversation_history(user_id, limit=6)
-                    print(f"  🧠 [Memory] 사용자 {user_id}의 대화 기록 {len(chat_history)}건 로드")
+                    # 세션 ID가 있으면 해당 세션 기록만, 없으면 유저 최신 기록 (폴백)
+                    if request.session_id:
+                        chat_history = sql_store.get_conversation_history_by_session(user_id, request.session_id, limit=100)
+                        print(f"  🧠 [Memory] 사용자 {user_id}, 세션 {request.session_id}의 대화 기록 {len(chat_history)}건 로드")
+                    else:
+                        chat_history = sql_store.get_conversation_history(user_id, limit=10)
+                        print(f"  🧠 [Memory] 사용자 {user_id}의 최신 대화 기록 {len(chat_history)}건 로드 (세션 미지정)")
                 except Exception as e:
                     print(f"  ⚠️ [Memory] 조회 실패: {e}")
 
@@ -989,21 +994,23 @@ async def chat_worker():
             
             answer = response.get("answer")
             
-            # 🧠 롱텀 메모리: 새로운 대화 저장 (임베딩 포함)
+            # 🧠 롱텀 메모리: 새로운 대화 저장 (세션 기반 및 임베딩 포함)
             if user_id and answer:
                 try:
+                    # 세션 ID가 없으면 새로 생성 (서버 사이드 세션 유지)
+                    target_session_id = request.session_id or str(uuid.uuid4())
+                    
                     # 질문 임베딩 생성 (384차원)
+                    query_embedding = None
                     try:
                         from sentence_transformers import SentenceTransformer
-                        # 모델 경로는 기본값 또는 환경에 맞게 조정 (여기서는 직접 지정하거나 기존 패턴 참고)
                         embed_model = SentenceTransformer("intfloat/multilingual-e5-small")
                         query_embedding = embed_model.encode(request.message).tolist()
                     except Exception as e:
                         print(f"  ⚠️ [Memory] 임베딩 생성 실패: {e}")
-                        query_embedding = None
 
-                    sql_store.save_memory(request.message, answer, user_id, embedding=query_embedding)
-                    print(f"  💾 [Memory] 대화 내용 및 임베딩 저장 완료")
+                    sql_store.save_memory(request.message, answer, user_id, target_session_id, embedding=query_embedding)
+                    print(f"  💾 [Memory] 세션 {target_session_id}에 대화 내용 저장 완료")
                 except Exception as e:
                     print(f"  ⚠️ [Memory] 저장 실패: {e}")
 

@@ -607,20 +607,35 @@ class SQLStore:
             return None
 
     # Memory 테이블 관련 메서드
-    def save_memory(self, question: str, answer: str, users_id: int = None, embedding: List[float] = None) -> Optional[int]:
-        """대화 기록 저장"""
+    def save_memory(self, question: str, answer: str, users_id: int, session_id: str, embedding: List[float] = None) -> Optional[int]:
+        """대화 기록 저장 (세션 기반 및 100개 초과 시 자동 삭제)"""
         if embedding:
-            insert_query = "INSERT INTO memory (question, answer, users_id, embedding) VALUES (%s, %s, %s, %s) RETURNING id;"
-            params = (question, answer, users_id, embedding)
+            insert_query = "INSERT INTO memory (question, answer, users_id, session_id, embedding) VALUES (%s, %s, %s, %s, %s) RETURNING id;"
+            params = (question, answer, users_id, session_id, embedding)
         else:
-            insert_query = "INSERT INTO memory (question, answer, users_id) VALUES (%s, %s, %s) RETURNING id;"
-            params = (question, answer, users_id)
+            insert_query = "INSERT INTO memory (question, answer, users_id, session_id) VALUES (%s, %s, %s, %s) RETURNING id;"
+            params = (question, answer, users_id, session_id)
             
         try:
             with self._get_connection() as conn:
                 with conn.cursor() as cur:
+                    # 1. 메모리 저장
                     cur.execute(insert_query, params)
                     memory_id = cur.fetchone()[0]
+                    
+                    # 2. 100개 초과 시 오래된 메모리 삭제 (OFFSET 기반)
+                    # 동일 세션 내에서만 삭제 수행
+                    delete_query = """
+                        DELETE FROM memory 
+                        WHERE id IN (
+                            SELECT id FROM memory 
+                            WHERE users_id = %s AND session_id = %s 
+                            ORDER BY created_at DESC 
+                            OFFSET 100
+                        );
+                    """
+                    cur.execute(delete_query, (users_id, session_id))
+                    
                     conn.commit()
             return memory_id
         except Exception as e:
@@ -647,6 +662,33 @@ class SQLStore:
     def get_conversation_history(self, user_id: int, limit: int = 10) -> List[Dict]:
         """대화 기록 조회 (Agent용 포맷)"""
         memories = self.get_memory_by_user(user_id, limit)
+        history = []
+        # 최신순으로 가져왔으므로 역순으로 정렬하여 시간순으로 배치
+        for mem in reversed(memories):
+            history.append({"role": "user", "content": mem["question"]})
+            history.append({"role": "assistant", "content": mem["answer"]})
+        return history
+
+    def get_memory_by_session(self, users_id: int, session_id: str, limit: int = 10) -> List[Dict]:
+        """사용자 및 세션별 대화 기록 조회"""
+        query = """
+            SELECT id, question, answer, created_at
+            FROM memory
+            WHERE users_id = %s AND session_id = %s
+            ORDER BY created_at DESC
+            LIMIT %s
+        """
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    cur.execute(query, (users_id, session_id, limit))
+                    return cur.fetchall()
+        except Exception:
+            return []
+
+    def get_conversation_history_by_session(self, user_id: int, session_id: str, limit: int = 10) -> List[Dict]:
+        """세션별 대화 기록 조회 (Agent용 포맷)"""
+        memories = self.get_memory_by_session(user_id, session_id, limit)
         history = []
         # 최신순으로 가져왔으므로 역순으로 정렬하여 시간순으로 배치
         for mem in reversed(memories):
